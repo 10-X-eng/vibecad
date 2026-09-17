@@ -92,6 +92,27 @@ def study_inventory(
         if isinstance(source, dict) and source.get("object_name"):
             geometry_sources.add(str(source["object_name"]))
 
+    # FEM stores these resources on the mesh, not necessarily in Analysis.Group.
+    # Follow only this study's meshes and retain directly grouped resources once.
+    seen_refinements = {obj.Name for obj in objects["mesh_refinement"]}
+    for mesh in objects["mesh"]:
+        resources = (
+            *tuple(getattr(mesh, "MeshRefinementList", ()) or ()),
+            *tuple(getattr(mesh, "MeshGroupList", ()) or ()),
+        )
+        for resource in resources:
+            if resource.Name in seen_refinements:
+                continue
+            try:
+                state = mesh_refinement_state(resource)
+            except NativeAnalyzeError:
+                # validate_assignments below reports malformed resources; they
+                # must not make the entire study's provider context unreadable.
+                continue
+            seen_refinements.add(resource.Name)
+            states["mesh_refinement"].append(state)
+            geometry_sources.update(_references(state))
+
     equations = []
     active_solver_names = {
         str(state["object_name"])

@@ -117,6 +117,27 @@ def _events(rounds: int = 16) -> None:
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
 
 
+def _provider_call(runner, *arguments):
+    """Match production: the provider waits on its thread, never on Qt's thread."""
+    outcome = {}
+
+    class ProviderThread(QtCore.QThread):
+        def run(self):
+            try:
+                outcome["result"] = runner(*arguments)
+            except BaseException as exc:
+                outcome["error"] = exc
+
+    worker = ProviderThread()
+    worker.start()
+    while worker.isRunning():
+        _events(2)
+    worker.wait()
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["result"]
+
+
 def _surface():
     main_window = Gui.getMainWindow()
     controller = main_window.findChild(QtCore.QObject, "VibeCADRibbonController")
@@ -490,6 +511,7 @@ def _run() -> None:
             "analyze.openfoam_solver",
             "analyze.flow_mesh",
         } <= fluid_names
+        assert "workspace.switch" in fluid_names
         assert not {
             "analyze.fluid",
             "analyze.boundary_velocity",
@@ -504,7 +526,6 @@ def _run() -> None:
             "analyze.thermal",
             "analyze.electromagnetic",
             "analyze.inspect",
-            "workspace.switch",
         } & fluid_names
         fluid_schema_bytes = len(
             json.dumps(
@@ -669,7 +690,7 @@ def _run() -> None:
             "native-analyze-provider-surface-create-local-size",
         )
         assert refinement_response.get("ok") is True, refinement_response
-        assert refinement_response.get("provider_surface_changed") is True
+        assert refinement_response.get("provider_surface_changed") is True, refinement_response
         runner.close()
         runner = None
 
@@ -686,8 +707,9 @@ def _run() -> None:
                 controller=controller,
                 document_thread_dispatch=VibeGui._dispatch_to_document_thread,
             ),
-            document_dispatch=lambda operation: operation(),
-            refresh_context=lambda: Session._context_for_provider(service),
+            document_dispatch=VibeGui._dispatch_to_document_thread,
+            refresh_context=lambda: VibeGui._dispatch_to_document_thread(
+                lambda: Session._context_for_provider(service)),
             frozen_surface=dict(edit_context["provider_tool_surface"]),
             frozen_schemas=edit_schemas,
             frozen_modeling_surface=dict(edit_context["modeling_surface"]),
@@ -705,7 +727,7 @@ def _run() -> None:
             "native-analyze-provider-surface-edit-local-size",
         )
         assert edit_response.get("ok") is True, edit_response
-        generate_response = runner(
+        generate_response = _provider_call(runner,
             "analyze.generate_gmsh",
             json.dumps(
                 {"mesh_name": mesh_response["mesh_name"]},
@@ -714,33 +736,17 @@ def _run() -> None:
             "native-analyze-provider-surface-generate-mesh",
         )
         assert generate_response.get("ok") is True, generate_response
-        pending_domain = service.native_active_snapshot()["domain"]
-        pending_context = Session._context_for_provider(service)
-        pending_names = {
-            schema["name"] for schema in pending_context["provider_tool_schemas"]
-        }
-        job_id = generate_response["job"]["job_id"]
-        assert pending_domain["provider_scope"]["generated_mesh_count"] == 0
-        assert pending_domain["run_status"]["job_id"] == job_id
-        assert pending_domain["run_status"]["terminal"] is False
-        assert "analyze.generate_gmsh" not in pending_names
-        assert "native.job" in pending_names
-        assert generate_response.get("provider_surface_changed") is True, (
-            generate_response,
-            pending_domain,
-            sorted(pending_names),
-        )
+        job_id = generate_response["background_job"]["job_id"]
+        assert generate_response["background_job"]["document_changed"] is True
+        assert generate_response.get("provider_surface_changed") is True, generate_response
         assert generate_response.get("next_turn_required") is True
         assert runner.turn_transition_requested() is True
         runner.close()
         runner = None
 
-        deadline = QtCore.QDeadlineTimer(30000)
-        while not service.native_background_manager().snapshot(job_id).terminal:
-            assert not deadline.hasExpired(), job_id
-            _events(2)
         completed = service.native_background_manager().snapshot(job_id)
         assert completed.phase == "completed", completed
+        assert completed.terminal is True and completed.worker_active is False, completed
         generated_domain = service.native_active_snapshot()["domain"]
         generated_context = Session._context_for_provider(service)
         generated_names = {
@@ -752,8 +758,8 @@ def _run() -> None:
 
         completed_after_capture = create_native_session_execution(
             service=service,
-            expected_surface=dict(pending_context["provider_tool_surface"]),
-            expected_schemas=list(pending_context["provider_tool_schemas"]),
+            expected_surface=dict(generated_context["provider_tool_surface"]),
+            expected_schemas=list(generated_context["provider_tool_schemas"]),
             controller=controller,
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
