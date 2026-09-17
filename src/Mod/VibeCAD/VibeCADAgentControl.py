@@ -3119,8 +3119,6 @@ def dispatch(
         )
 
     if action == "status":
-        if not effective_fail_closed:
-            return report_status()
         return on_document_thread(report_status)
     if action == "documents":
         return on_document_thread(list_documents)
@@ -3360,6 +3358,15 @@ def handle_http_request(
 
 class _AgentRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Clients can disconnect between keep-alive requests, before
+            # _handle/_write_json gets control. Only transport disconnects
+            # are expected here; unrelated failures still reach the server.
+            self.close_connection = True
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         return None
