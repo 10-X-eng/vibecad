@@ -276,7 +276,8 @@ class TestSheetNativeView(unittest.TestCase):
             edit_or_task_active=lambda: active_edit_state().active or bool(Gui.Control.activeDialog()),
             document_thread_dispatch=lambda action: action())
         workspace = NativeWorkspaceRuntime(context)
-        workspace.switch({"operation": "switch", "workspace": "sheet_metal"})
+        if read_active_ribbon_surface().surface_id != "sheet_metal":
+            workspace.switch({"operation": "switch", "workspace": "sheet_metal"})
         manufacturing = NativeSheetMetalManufacturingRuntime(context)
         status = {"quote": {"status": "blocked", "findings": [{"message": "Clearance failure"}]},
                   "can_checkout": False}
