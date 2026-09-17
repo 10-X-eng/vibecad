@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+import fnmatch
 import os
 import subprocess
 import tempfile
@@ -33,6 +34,8 @@ class TestMacOSBuildToolchain(unittest.TestCase):
             "        then:\n"
             "          - bin/**\n"
             "          - lib/**\n"
+            "          - Library/**\n"
+            "          - PlugIns/**\n"
             "          - '**/*.so'\n"
             "          - '**/*.dylib'\n"
             "          - '**/*.bundle'\n"
@@ -41,6 +44,32 @@ class TestMacOSBuildToolchain(unittest.TestCase):
             recipe,
         )
         self.assertNotIn("binary_relocation: false", recipe)
+
+    def test_macos_relocation_covers_nested_bundle_executables(self) -> None:
+        recipe = RECIPE.read_text(encoding="utf-8")
+        selection = recipe.split("    binary_relocation:\n", 1)[1].split(
+            "        then:\n", 1
+        )[1].split("        else:\n", 1)[0]
+        patterns = [line.strip()[2:].strip("'") for line in selection.splitlines()]
+        for path in (
+            "bin/freecad",
+            "lib/libFreeCADApp.dylib",
+            "Mod/Part/Part.so",
+            "Library/QuickLook/QuicklookFCStd.qlgenerator/Contents/MacOS/QuicklookFCStd",
+            "PlugIns/FreeCADThumbnailExtension.appex/Contents/MacOS/FreeCADThumbnailExtension",
+            "PlugIns/FreeCADPreviewExtension.appex/Contents/MacOS/FreeCADPreviewExtension",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(any(fnmatch.fnmatchcase(path, p) for p in patterns), path)
+        for path in (
+            "bin/codex-app-server",
+            "bin/codex-code-mode-host",
+            "codex-path/rg",
+            "codex-resources/zsh/bin/zsh",
+        ):
+            with self.subTest(path=path):
+                installed = "Mod/VibeCAD/codex_runtime/" + path
+                self.assertFalse(any(fnmatch.fnmatchcase(installed, p) for p in patterns))
 
     def test_macos_build_exports_flags_to_cmake(self) -> None:
         # Execute the complete recipe script, replacing external build/install

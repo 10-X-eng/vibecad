@@ -13,7 +13,7 @@ build:
   number: 6
   # Upstream Codex executables are self-contained, with system-only Mach-O
   # dependencies. Adding conda RPATHs overflows their unpadded headers.
-  # Relocate our bin/lib installs and all native modules, not those prebuilt
+  # Relocate our bin/lib installs, app plug-ins and native modules, not prebuilt
   # executables under Mod. The final recursive bundle audit remains mandatory.
   dynamic_linking:
     binary_relocation:
@@ -21,6 +21,8 @@ build:
         then:
           - bin/**
           - lib/**
+          - Library/**
+          - PlugIns/**
           - '**/*.so'
           - '**/*.dylib'
           - '**/*.bundle'
