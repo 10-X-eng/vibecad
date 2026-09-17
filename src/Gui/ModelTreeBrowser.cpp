@@ -113,6 +113,42 @@ std::string timelineRole(const App::DocumentObject* object)
     return stringProperty(object, App::DocumentTimeline::RolePropertyName);
 }
 
+bool isConsumedDesignBody(const App::DocumentObject* body)
+{
+    // Capture the persisted presence contract on the document owner, not
+    // Shape/Visibility: a hidden current part or an empty Body being edited
+    // must remain available. Generic property access keeps Gui independent
+    // of the optional PartDesign module.
+    const auto linked = [](const App::DocumentObject* object, const char* name) {
+        const auto* property = object
+            ? dynamic_cast<const App::PropertyLink*>(object->getPropertyByName(name))
+            : nullptr;
+        return property ? property->getValue() : nullptr;
+    };
+    const auto* publication = linked(body, "Tip");
+    if (!isDerivedFrom(publication, "PartDesign::DesignBodyPublication")
+        || publication->getDocument() != body->getDocument()) {
+        return false;
+    }
+    const auto* state = linked(publication, "CurrentState");
+    std::unordered_set<const App::DocumentObject*> visited;
+    while (isDerivedFrom(state, "PartDesign::DesignBodyState")) {
+        if (state->getDocument() != body->getDocument() || !visited.insert(state).second) {
+            return false;
+        }
+        const auto* operation = linked(state, "Operation");
+        if (!operation || App::DocumentTimeline::isObjectUsableAtCurrentPosition(operation)) {
+            const auto* present =
+                dynamic_cast<const App::PropertyBool*>(state->getPropertyByName("Present"));
+            return present && !present->getValue();
+        }
+        // CurrentState is the newest state, not necessarily the state at
+        // the history cursor. A rollback can restore a consumed tool Body.
+        state = linked(state, "PreviousState");
+    }
+    return false;
+}
+
 std::string vibeScriptOutputType(const App::DocumentObject* object)
 {
     return stringProperty(object, "VibeCADVibeScriptOutputType");
@@ -1063,7 +1099,7 @@ ModelTreeBrowserProjection::Role ModelTreeBrowserProjection::classify(
         return Role::Component;
     }
     if (isBody(object)) {
-        return Role::Body;
+        return isConsumedDesignBody(object) ? Role::Internal : Role::Body;
     }
     if (object->isDerivedFrom<App::Origin>()) {
         return Role::Origin;

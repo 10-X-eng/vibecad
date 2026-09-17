@@ -8659,7 +8659,13 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
         || changedProperty == "VibeCADScriptedModelId"
         || changedProperty == "VibeCADScriptedOutputKey"
         || changedProperty == "VibeCADNativeFeatureRole"
-        || changedProperty == "VibeCADTreeRole";
+        || changedProperty == "VibeCADTreeRole"
+        // Native Body presence is resolved through its publication/state
+        // chain. These edits can restore a consumed part without changing
+        // the Body's Group or the document's object membership.
+        || changedProperty == "Tip" || changedProperty == "CurrentState"
+        || changedProperty == "PreviousState" || changedProperty == "Present"
+        || changedProperty == "Operation" || changedProperty == "Suppressed";
     auto* geoGroup = changedProperty == "Group"
         ? obj->getExtensionByType<App::GeoFeatureGroupExtension>(true)
         : nullptr;
