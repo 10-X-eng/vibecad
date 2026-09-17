@@ -21,6 +21,27 @@ PRESET_SELECTOR = (
 
 
 class TestMacOSBuildToolchain(unittest.TestCase):
+    def test_prebuilt_codex_runtime_is_not_relinked_by_rattler(self) -> None:
+        # These upstream executables use system libraries, not the conda
+        # prefix. Adding conda RPATHs can overflow rg/zsh's Mach-O headers.
+        # Keep relocation enabled for every other native file.
+        recipe = RECIPE.read_text(encoding="utf-8")
+        self.assertIn(
+            "  dynamic_linking:\n"
+            "    binary_relocation:\n"
+            "      - if: osx\n"
+            "        then:\n"
+            "          - bin/**\n"
+            "          - lib/**\n"
+            "          - '**/*.so'\n"
+            "          - '**/*.dylib'\n"
+            "          - '**/*.bundle'\n"
+            "        else:\n"
+            "          - '**'\n",
+            recipe,
+        )
+        self.assertNotIn("binary_relocation: false", recipe)
+
     def test_macos_build_exports_flags_to_cmake(self) -> None:
         # Execute the complete recipe script, replacing external build/install
         # commands with stubs. CMake's stub starts a child shell so a shell-only

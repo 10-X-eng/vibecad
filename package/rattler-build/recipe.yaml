@@ -10,7 +10,22 @@ source:
   use_gitignore: true
 
 build:
-  number: 5
+  number: 6
+  # Upstream Codex executables are self-contained, with system-only Mach-O
+  # dependencies. Adding conda RPATHs overflows their unpadded headers.
+  # Relocate our bin/lib installs and all native modules, not those prebuilt
+  # executables under Mod. The final recursive bundle audit remains mandatory.
+  dynamic_linking:
+    binary_relocation:
+      - if: osx
+        then:
+          - bin/**
+          - lib/**
+          - '**/*.so'
+          - '**/*.dylib'
+          - '**/*.bundle'
+        else:
+          - '**'
   script:
     env:
       # rattler-build runs the build in a sandbox that does not inherit shell

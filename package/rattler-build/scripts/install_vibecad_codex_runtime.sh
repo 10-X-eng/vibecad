@@ -15,7 +15,7 @@ download_cache="${VIBECAD_DOWNLOAD_CACHE:-${repository_root}/package/rattler-bui
 runtime_root="${module_directory}/codex_runtime"
 stamp="${runtime_root}/runtime-spec.sha256"
 
-codex_version="0.153.4"
+codex_version="0.154.0"
 release_tag="rust-v${codex_version}"
 release_root="https://github.com/openai/codex/releases/download/${release_tag}"
 license_url="https://raw.githubusercontent.com/openai/codex/${release_tag}/LICENSE"
@@ -31,32 +31,32 @@ machine="$(${python_executable} -c 'import platform; print(platform.machine().lo
 case "${platform}:${machine}" in
     linux:x86_64|linux:amd64)
         archive="codex-app-server-package-x86_64-unknown-linux-musl.tar.gz"
-        archive_sha256="a5d37ff1fa6953ee6d317b7e69bfafd39f5f53350b631d790fa7531159f22420"
+        archive_sha256="b2450aaa4004d06790dd8a69d0246f4503ff1258400cc20de7d7a42ffe81b253"
         executable="${runtime_root}/bin/codex-app-server"
         ;;
     linux:aarch64|linux:arm64)
         archive="codex-app-server-package-aarch64-unknown-linux-musl.tar.gz"
-        archive_sha256="5673c5a8935ff2f85ca67b489e560fdd5e08fb0f0e2f7426f048ec7449aa4fdc"
+        archive_sha256="295bb1b94a8b964b2d2461db9736b9907a9e4daa6ceb8e9bbb820b304fa897ed"
         executable="${runtime_root}/bin/codex-app-server"
         ;;
     win32:amd64|win32:x86_64)
         archive="codex-app-server-package-x86_64-pc-windows-msvc.tar.gz"
-        archive_sha256="69441ca4c8f6197923dc1b70a8aa870ff912b5367347287d021eaca1f3add971"
+        archive_sha256="5f8b43e030c0aeeb7bdb3d5e03fff4c68ba94fa2df0ae437c490811f54660d74"
         executable="${runtime_root}/bin/codex-app-server.exe"
         ;;
     win32:arm64|win32:aarch64)
         archive="codex-app-server-package-aarch64-pc-windows-msvc.tar.gz"
-        archive_sha256="d5f0ef33223912a1559a7e97012afa18eef3369f1d07dde199edfada062503ee"
+        archive_sha256="7406aa3745acd5bd639b8921c0ee5e241861763606465cac643683944a849457"
         executable="${runtime_root}/bin/codex-app-server.exe"
         ;;
     darwin:arm64|darwin:aarch64)
         archive="codex-app-server-package-aarch64-apple-darwin.tar.gz"
-        archive_sha256="90f0467fd03294896204e8856bf969a0691590e8bef78dc2563a264b186f3265"
+        archive_sha256="7bf20c1843bdcff086c89a294299833f20146ebbdba03e7f49f020b7adbfff7b"
         executable="${runtime_root}/bin/codex-app-server"
         ;;
     darwin:x86_64|darwin:amd64)
         archive="codex-app-server-package-x86_64-apple-darwin.tar.gz"
-        archive_sha256="ee286ca326a0df4a2b81dddb213d61e610d7b9c4f3173cc16f6023683a94ca82"
+        archive_sha256="4fddde3689d2aa0058c06138a84b05f87bdbff8cd556fba5816a97ac0469a4d4"
         executable="${runtime_root}/bin/codex-app-server"
         ;;
     *)

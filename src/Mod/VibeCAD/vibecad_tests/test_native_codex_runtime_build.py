@@ -77,12 +77,12 @@ def test_native_runtime_opt_out_does_not_install_or_download(project):
 
 def test_fresh_runtime_is_installed_with_companions(installed, tmp_path):
     run, build, runtime = installed
-    assert "0.153.4" in run(str(runtime / "bin/codex-app-server"), "--version")
+    assert "0.154.0" in run(str(runtime / "bin/codex-app-server"), "--version")
     assert (runtime / "bin/codex-code-mode-host").is_file()
     prefix = tmp_path / "installed"
     run("cmake", "--install", str(build), "--prefix", str(prefix))
     packaged = prefix / "Mod/VibeCAD/codex_runtime"
-    assert "0.153.4" in run(str(packaged / "bin/codex-app-server"), "--version")
+    assert "0.154.0" in run(str(packaged / "bin/codex-app-server"), "--version")
     assert (packaged / "bin/codex-code-mode-host").is_file()
 
 
@@ -101,7 +101,7 @@ def test_rebuild_repairs_stale_version_metadata_with_newer_mtime(installed):
     metadata["version"] = "0.144.5"
     manifest.write_text(json.dumps(metadata))
     run("cmake", "--build", str(build), "--parallel", "12")
-    assert json.loads(manifest.read_text())["version"] == "0.153.4"
+    assert json.loads(manifest.read_text())["version"] == "0.154.0"
 
 
 def test_rebuild_replaces_old_executable_even_with_current_metadata(installed):
@@ -111,7 +111,7 @@ def test_rebuild_replaces_old_executable_even_with_current_metadata(installed):
     binary.chmod(0o755)
     assert "0.144.5" in run(str(binary), "--version")
     run("cmake", "--build", str(build), "--parallel", "12")
-    assert "0.153.4" in run(str(binary), "--version")
+    assert "0.154.0" in run(str(binary), "--version")
 
 
 def test_current_runtime_is_verified_without_replacing_binaries(installed):
