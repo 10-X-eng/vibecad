@@ -1455,7 +1455,19 @@ class CodexProvider(BaseProvider):
                         "External MCP tool name collides with a VibeCAD tool: "
                         + ".".join(part for part in external_key if part)
                     )
-            dynamic_tools.extend(external_tools)
+            if namespaced_tools:
+                # CAD questions and session history share the conversation namespace.
+                # Codex requires one declaration per namespace, not per tool source.
+                namespaces = {tool["name"]: tool for tool in dynamic_tools}
+                for tool in external_tools:
+                    existing = namespaces.get(tool["name"])
+                    if existing is None:
+                        dynamic_tools.append(tool)
+                        namespaces[tool["name"]] = tool
+                    else:
+                        existing["tools"].extend(tool["tools"])
+            else:
+                dynamic_tools.extend(external_tools)
             dynamic_name_map.update(external_name_map)
         skill_call_key = (
             ("skills", "read")
