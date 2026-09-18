@@ -48,6 +48,14 @@ _RECOMPUTE_DRAIN_GATE_ATTRS = (
     "MutationBlockingPresentationUpdateActive",
     "GuiRecomputeCoordinatorActive",
 )
+_RECOMPUTE_PATTERN_TYPE_MARKERS = (
+    "PartDesign::PolarPattern",
+    "PartDesign::LinearPattern",
+    "PartDesign::Mirrored",
+    "PartDesign::MultiTransform",
+    "PartDesign::Transformed",
+)
+_RECOMPUTE_BODY_TYPE_MARKERS = ("PartDesign::Body",)
 AGENT_PORT_ENV = "VIBECAD_AGENT_PORT"
 AGENT_HOME_ENV = "VIBECAD_AGENT_HOME"
 TOKEN_FILENAME = "token"
@@ -2982,6 +2990,168 @@ def _document_has_touched_objects(document: Any) -> bool:
     return False
 
 
+def _object_type_id(obj: Any) -> str:
+    return str(getattr(obj, "TypeId", "") or getattr(obj, "Type", "") or "")
+
+
+def _object_has_type(obj: Any, *markers: str) -> bool:
+    type_id = _object_type_id(obj)
+    if type_id in markers:
+        return True
+    derived = getattr(obj, "isDerivedFrom", None)
+    if not callable(derived):
+        return False
+    for name in markers:
+        try:
+            if derived(name):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _is_patterned_feature(obj: Any) -> bool:
+    return _object_has_type(obj, *_RECOMPUTE_PATTERN_TYPE_MARKERS)
+
+
+def _is_part_design_body(obj: Any) -> bool:
+    if _object_has_type(obj, *_RECOMPUTE_BODY_TYPE_MARKERS):
+        return True
+    tip = getattr(obj, "Tip", None)
+    return tip is not None and tip is not obj
+
+
+def _safe_shape_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
+
+
+def _shape_signature(shape: Any) -> tuple[Any, ...]:
+    """Cheap Tip/Body solid fingerprint. Volume is the live /v1/run metric."""
+
+    if shape is None:
+        return ()
+    volume = _safe_shape_float(getattr(shape, "Volume", None))
+    hash_code = None
+    hasher = getattr(shape, "hashCode", None)
+    if callable(hasher):
+        try:
+            hash_code = int(hasher())
+        except Exception:
+            hash_code = None
+    box = getattr(shape, "BoundBox", None)
+    bounds = None
+    if box is not None:
+        bounds = (
+            _safe_shape_float(getattr(box, "XLength", None)),
+            _safe_shape_float(getattr(box, "YLength", None)),
+            _safe_shape_float(getattr(box, "ZLength", None)),
+        )
+    return (volume, hash_code, bounds)
+
+
+def _pattern_rebuild_incomplete(obj: Any) -> bool:
+    rejected = getattr(obj, "RejectedSolidCount", None)
+    try:
+        if rejected is not None and int(rejected) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    occurrences = getattr(obj, "Occurrences", None)
+    generated = getattr(obj, "GeneratedOccurrenceCount", None)
+    try:
+        if (
+            occurrences is not None
+            and generated is not None
+            and int(occurrences) > 0
+            and int(generated) > 0
+            and int(occurrences) != int(generated)
+        ):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _solid_readiness(document: Any) -> dict[str, Any]:
+    """Tip/Body/pattern readiness beyond document gates and Touched flags.
+
+    PolarPattern / Body can report Up-to-date after open while the stored
+    solid is still a partial fuse, or while Body.Shape still holds the
+    restored partner of Tip.Shape (preserveRestoredShape).
+    """
+
+    items: list[tuple[str, tuple[Any, ...]]] = []
+    force_targets: list[Any] = []
+    incomplete = False
+    tip_mismatch = False
+    needs_force = False
+    for obj in getattr(document, "Objects", None) or ():
+        patterned = _is_patterned_feature(obj)
+        body = _is_part_design_body(obj)
+        if not patterned and not body:
+            continue
+        needs_force = True
+        force_targets.append(obj)
+        name = str(getattr(obj, "Name", "") or id(obj))
+        items.append((name, _shape_signature(getattr(obj, "Shape", None))))
+        if _pattern_rebuild_incomplete(obj):
+            incomplete = True
+        tip = getattr(obj, "Tip", None)
+        if tip is None or tip is obj:
+            continue
+        force_targets.append(tip)
+        tip_name = str(getattr(tip, "Name", "") or f"{name}.Tip")
+        tip_sig = _shape_signature(getattr(tip, "Shape", None))
+        items.append((tip_name, tip_sig))
+        tip_volume = _safe_shape_float(getattr(getattr(tip, "Shape", None), "Volume", None))
+        body_volume = _safe_shape_float(getattr(getattr(obj, "Shape", None), "Volume", None))
+        if (
+            tip_volume is not None
+            and body_volume is not None
+            and tip_volume != body_volume
+        ):
+            tip_mismatch = True
+    return {
+        "items": tuple(items),
+        "incomplete": incomplete,
+        "tip_mismatch": tip_mismatch,
+        "needs_force": needs_force,
+        "force_targets": tuple(force_targets),
+    }
+
+
+def _call_recompute(
+    recompute_call: Any,
+    *,
+    targets: tuple[Any, ...] | list[Any] | None = None,
+    force: bool = False,
+) -> None:
+    if not callable(recompute_call):
+        return
+    if force:
+        try:
+            if targets:
+                recompute_call(list(targets), True)
+            else:
+                recompute_call(None, True)
+            return
+        except TypeError:
+            pass
+        for obj in targets or ():
+            touch = getattr(obj, "touch", None)
+            if callable(touch):
+                try:
+                    touch()
+                except Exception:
+                    pass
+    recompute_call()
+
+
 def _pump_recompute_events(gui: Any | None = None) -> None:
     """Process queued GUI follow-ups on the document thread. Do not sleep."""
 
@@ -3020,7 +3190,9 @@ def _drain_recompute(
     Document::recompute can return 0 on the GUI thread and queue
     scheduleGuiRecomputeFollowUp while cooperative / pending / presentation
     gates are active. Stay on the document thread and pump Qt so that
-    follow-up runs before /v1/run returns success.
+    follow-up runs. After flags go idle, PolarPattern/Body Tip solids must
+    also hold a stable Shape (and a forced rebuild runs once for patterned
+    tips, because idle ``recompute()`` is a no-op when nothing is Touched).
     """
 
     now = clock or time.monotonic
@@ -3035,27 +3207,93 @@ def _drain_recompute(
         calls += 1
 
     advance = pump if pump is not None else lambda: _pump_recompute_events(gui)
+    previous_items: tuple[tuple[str, tuple[Any, ...]], ...] | None = None
+    forced = False
     while True:
         advance()
         blocked = _recompute_gates_block(document)
         touched = _document_has_touched_objects(document)
-        if not blocked and not touched:
-            return {
-                "ok": True,
-                "recompute_calls": calls,
-                "ms": (now() - started) * 1000.0,
-                "error": None,
-            }
-        if now() >= deadline:
-            return {
-                "ok": False,
-                "recompute_calls": calls,
-                "ms": (now() - started) * 1000.0,
-                "error": "RECOMPUTE_DRAIN_TIMEOUT",
-            }
-        if not blocked and touched and callable(recompute_call):
-            recompute_call()
+        if blocked or touched:
+            previous_items = None
+            if now() >= deadline:
+                return {
+                    "ok": False,
+                    "recompute_calls": calls,
+                    "ms": (now() - started) * 1000.0,
+                    "error": "RECOMPUTE_DRAIN_TIMEOUT",
+                }
+            if not blocked and touched:
+                _call_recompute(recompute_call)
+                calls += 1
+            continue
+
+        readiness = _solid_readiness(document)
+        if readiness["incomplete"] or readiness["tip_mismatch"]:
+            previous_items = None
+            if now() >= deadline:
+                return {
+                    "ok": False,
+                    "recompute_calls": calls,
+                    "ms": (now() - started) * 1000.0,
+                    "error": "RECOMPUTE_DRAIN_TIMEOUT",
+                }
+            _call_recompute(
+                recompute_call,
+                targets=readiness["force_targets"],
+                force=True,
+            )
             calls += 1
+            forced = True
+            continue
+
+        items = readiness["items"]
+        if items:
+            if previous_items is None:
+                previous_items = items
+                if now() >= deadline:
+                    return {
+                        "ok": False,
+                        "recompute_calls": calls,
+                        "ms": (now() - started) * 1000.0,
+                        "error": "RECOMPUTE_DRAIN_TIMEOUT",
+                    }
+                continue
+            if previous_items != items:
+                previous_items = None
+                if now() >= deadline:
+                    return {
+                        "ok": False,
+                        "recompute_calls": calls,
+                        "ms": (now() - started) * 1000.0,
+                        "error": "RECOMPUTE_DRAIN_TIMEOUT",
+                    }
+                _call_recompute(recompute_call)
+                calls += 1
+                continue
+            if readiness["needs_force"] and not forced:
+                previous_items = None
+                if now() >= deadline:
+                    return {
+                        "ok": False,
+                        "recompute_calls": calls,
+                        "ms": (now() - started) * 1000.0,
+                        "error": "RECOMPUTE_DRAIN_TIMEOUT",
+                    }
+                _call_recompute(
+                    recompute_call,
+                    targets=readiness["force_targets"],
+                    force=True,
+                )
+                calls += 1
+                forced = True
+                continue
+
+        return {
+            "ok": True,
+            "recompute_calls": calls,
+            "ms": (now() - started) * 1000.0,
+            "error": None,
+        }
 
 
 def _json_safe(value: Any) -> Any:

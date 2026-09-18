@@ -43,9 +43,12 @@ class _GatedDocument:
         self.PresentationUpdateActive = presentation
         self.Objects = list(objects or [])
         self.recompute_calls = 0
+        self.recompute_force_calls = 0
 
-    def recompute(self) -> None:
+    def recompute(self, *args: Any, **kwargs: Any) -> None:
         self.recompute_calls += 1
+        if args or kwargs.get("force"):
+            self.recompute_force_calls += 1
 
 
 def test_recompute_gates_use_exposed_document_proxies() -> None:
@@ -202,6 +205,203 @@ def test_run_script_recompute_false_does_not_drain(monkeypatch) -> None:
     assert "recompute_drain_ms" not in payload
 
 
+class _TickClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        self.now += 0.01
+        return self.now
+
+
+class _Shape:
+    def __init__(self, volume: float, hash_code: int = 1) -> None:
+        self.Volume = volume
+        self._hash_code = hash_code
+
+    def hashCode(self) -> int:
+        return self._hash_code
+
+
+class _MovingShape:
+    def __init__(self, volumes: list[float]) -> None:
+        self._volumes = list(volumes)
+
+    @property
+    def Volume(self) -> float:
+        if len(self._volumes) > 1:
+            return self._volumes.pop(0)
+        return self._volumes[0]
+
+    def hashCode(self) -> int:
+        return int(self.Volume)
+
+
+class _Feature:
+    def __init__(
+        self,
+        name: str,
+        *,
+        type_id: str,
+        volume: float | None = None,
+        shape: Any = None,
+        rejected: int = 0,
+        occurrences: int | None = None,
+        generated: int | None = None,
+        tip: Any = None,
+    ) -> None:
+        self.Name = name
+        self.TypeId = type_id
+        self.State = ["Up-to-date"]
+        self.Shape = _Shape(volume) if shape is None and volume is not None else shape
+        self.RejectedSolidCount = rejected
+        if occurrences is not None:
+            self.Occurrences = occurrences
+        if generated is not None:
+            self.GeneratedOccurrenceCount = generated
+        if tip is not None:
+            self.Tip = tip
+
+
+def test_shape_signature_uses_volume_and_hash() -> None:
+    shape = _Shape(3925.23456789, hash_code=44)
+    assert control._shape_signature(shape)[0] == 3925.234568
+    assert control._shape_signature(shape)[1] == 44
+
+
+def test_solid_readiness_ignores_plain_pads() -> None:
+    pad = _Feature("Pad001", type_id="PartDesign::Pad", volume=10.0)
+    readiness = control._solid_readiness(SimpleNamespace(Objects=[pad]))
+    assert readiness["items"] == ()
+    assert readiness["needs_force"] is False
+
+
+def test_solid_readiness_flags_tip_volume_mismatch() -> None:
+    tip = _Feature("PolarPattern", type_id="PartDesign::PolarPattern", volume=3925.23)
+    body = _Feature("Body", type_id="PartDesign::Body", volume=3793.0, tip=tip)
+    readiness = control._solid_readiness(SimpleNamespace(Objects=[body, tip]))
+    assert readiness["tip_mismatch"] is True
+    assert readiness["needs_force"] is True
+
+
+def test_pattern_rebuild_incomplete_uses_diagnostics() -> None:
+    rejected = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        volume=3793.0,
+        rejected=2,
+    )
+    short = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        volume=3793.0,
+        occurrences=6,
+        generated=4,
+    )
+    ok = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        volume=3925.23,
+        occurrences=6,
+        generated=6,
+    )
+    assert control._pattern_rebuild_incomplete(rejected) is True
+    assert control._pattern_rebuild_incomplete(short) is True
+    assert control._pattern_rebuild_incomplete(ok) is False
+
+
+def test_drain_recompute_waits_for_moving_tip_volume() -> None:
+    polar = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        shape=_MovingShape([3793.0, 3881.0, 3925.23, 3925.23, 3925.23, 3925.23, 3925.23]),
+        occurrences=6,
+        generated=6,
+    )
+    document = _GatedDocument(objects=[polar])
+    result = control._drain_recompute(
+        document,
+        timeout_s=5.0,
+        pump=lambda: None,
+        clock=_TickClock(),
+    )
+    assert result["ok"] is True
+    assert polar.Shape.Volume == 3925.23
+    assert result["recompute_calls"] >= 2
+
+
+def test_drain_recompute_forces_when_body_tip_volumes_differ() -> None:
+    tip = _Feature("PolarPattern", type_id="PartDesign::PolarPattern", volume=3925.23)
+    body = _Feature("Body", type_id="PartDesign::Body", volume=3793.0, tip=tip)
+    document = _GatedDocument(objects=[body, tip])
+
+    def recompute(*_args: Any, **_kwargs: Any) -> None:
+        document.recompute_calls += 1
+        if document.recompute_calls >= 2:
+            body.Shape.Volume = 3925.23
+
+    document.recompute = recompute  # type: ignore[method-assign]
+    result = control._drain_recompute(
+        document,
+        timeout_s=5.0,
+        pump=lambda: None,
+        clock=_TickClock(),
+    )
+    assert result["ok"] is True
+    assert body.Shape.Volume == 3925.23
+    assert result["recompute_calls"] >= 2
+
+
+def test_drain_recompute_forces_when_rejected_solids_remain() -> None:
+    polar = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        volume=3793.0,
+        rejected=1,
+        occurrences=6,
+        generated=6,
+    )
+    document = _GatedDocument(objects=[polar])
+
+    def recompute(*_args: Any, **_kwargs: Any) -> None:
+        document.recompute_calls += 1
+        if document.recompute_calls >= 2:
+            polar.RejectedSolidCount = 0
+            polar.Shape.Volume = 3925.23
+
+    document.recompute = recompute  # type: ignore[method-assign]
+    result = control._drain_recompute(
+        document,
+        timeout_s=5.0,
+        pump=lambda: None,
+        clock=_TickClock(),
+    )
+    assert result["ok"] is True
+    assert polar.RejectedSolidCount == 0
+    assert result["recompute_calls"] >= 2
+
+
+def test_drain_recompute_forces_once_for_stable_pattern_tip() -> None:
+    polar = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        volume=3925.23,
+        occurrences=6,
+        generated=6,
+    )
+    document = _GatedDocument(objects=[polar])
+    result = control._drain_recompute(
+        document,
+        timeout_s=5.0,
+        pump=lambda: None,
+        clock=_TickClock(),
+    )
+    assert result["ok"] is True
+    assert document.recompute_calls == 2
+    assert document.recompute_force_calls >= 1
+    assert result["recompute_calls"] == 2
+
+
 def test_run_script_drain_timeout_is_hard_failure(monkeypatch) -> None:
     document = _GatedDocument(cooperative=True)
     monkeypatch.setattr(control, "_app", lambda: SimpleNamespace(ActiveDocument=document))
@@ -215,3 +415,24 @@ def test_run_script_drain_timeout_is_hard_failure(monkeypatch) -> None:
     assert payload["failure_stage"] == "recompute"
     assert document.recompute_calls == 1
     assert payload["recompute_calls"] == 1
+
+
+def test_run_script_patterned_tip_forces_idle_rebuild(monkeypatch) -> None:
+    polar = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        volume=3925.23,
+        occurrences=6,
+        generated=6,
+    )
+    document = _GatedDocument(objects=[polar])
+    monkeypatch.setattr(control, "_app", lambda: SimpleNamespace(ActiveDocument=document))
+    monkeypatch.setattr(control, "_gui", lambda: SimpleNamespace(updateGui=lambda: None))
+    monkeypatch.setattr(control, "_document_summary", lambda _document: {"name": "stub"})
+
+    payload = control.run_script(python="result = 7")
+
+    assert payload["ok"] is True
+    assert document.recompute_calls == 2
+    assert document.recompute_force_calls >= 1
+    assert payload["recompute_calls"] == 2
