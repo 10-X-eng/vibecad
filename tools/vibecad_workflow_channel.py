@@ -200,8 +200,100 @@ result = {
 }
 """
 
+# TestDesignProfileRegionsGui._close_task clicks the visible Tasks-dock
+# QDialogButtonBox OK, then waits until Gui.Control.activeDialog is gone.
+# Kind dialog looks for a QDialog titled OK and finds none: Extrude OK
+# is not a modal. After that OK, DesignExtrude.Shape stays null
+# (test_final_result_checkbox_renders_unpublished_design_output).
+# The solid is BodyResult, type PartDesign::DesignBodyPublication.
+ACCEPT_DESIGN_TASK_PYTHON = """
+# vibecad.workflow-harness:accept_design_task
+QtWidgets = None
+QtCore = None
+for module_name in ("PySide6", "PySide2", "PySide"):
+    try:
+        QtWidgets = __import__(
+            module_name + ".QtWidgets",
+            fromlist=["QDialogButtonBox"],
+        )
+        QtCore = __import__(
+            module_name + ".QtCore",
+            fromlist=["QElapsedTimer", "QEventLoop", "QTimer"],
+        )
+        break
+    except ImportError:
+        continue
+if QtWidgets is None or QtCore is None:
+    raise RuntimeError("Qt widgets are unavailable")
+
+def _process_events(wait_ms=20):
+    if hasattr(Gui, "updateGui"):
+        Gui.updateGui()
+    application = QtWidgets.QApplication.instance()
+    if application is not None:
+        application.processEvents()
+    if wait_ms:
+        loop = QtCore.QEventLoop()
+        QtCore.QTimer.singleShot(wait_ms, loop.quit)
+        loop.exec()
+
+def _task_button(standard_button):
+    _process_events()
+    for button_box in Gui.getMainWindow().findChildren(
+        QtWidgets.QDialogButtonBox
+    ):
+        if not button_box.isVisible():
+            continue
+        button = button_box.button(standard_button)
+        if button is not None and button.isVisible() and button.isEnabled():
+            return button
+    return None
+
+if not Gui.Control.activeDialog():
+    raise RuntimeError("The Design operation task panel did not open")
+button = _task_button(QtWidgets.QDialogButtonBox.Ok)
+if button is None:
+    raise RuntimeError("No visible task QDialogButtonBox OK")
+button.click()
+timer = QtCore.QElapsedTimer()
+timer.start()
+finished = False
+while timer.elapsed() < 5000:
+    _process_events()
+    if not Gui.Control.activeDialog():
+        finished = True
+        break
+if not finished:
+    raise RuntimeError("The task did not finish accepting or cancelling")
+doc = App.ActiveDocument
+if doc is not None:
+    doc.recompute()
+publication = next(
+    (
+        obj
+        for obj in list(getattr(doc, "Objects", []) or [])
+        if str(obj.TypeId) == "PartDesign::DesignBodyPublication"
+    ),
+    None,
+)
+if publication is None:
+    raise RuntimeError("No PartDesign::DesignBodyPublication after task OK")
+result = {
+    "accepted": True,
+    "button": "Ok",
+    "publication": str(publication.Name),
+    "type_id": str(publication.TypeId),
+}
+"""
+
 # Import.export is the in-process exporter Std_Export calls after
 # FileDialog::getSaveFileName (src/Mod/Import/App/AppImportPy.cpp).
+# WriterStep::write only throws on IFSelect RetError/RetFail/RetStop.
+# Live 6714cd65: Import.export returned, then os.path.getsize raised
+# FileNotFoundError on the Windows temp path. TopoShape.exportStep
+# (TopoShapePy / TopoShape.cpp) is the STEP write Part.export uses.
+# Live after Extrude task OK: DesignExtrude.Shape is still null. The
+# solid with Faces is BodyResult (PartDesign::DesignBodyPublication).
 EXPORT_STEP_PYTHON = """
 # vibecad.workflow-harness:export_step
 import Import
@@ -210,23 +302,57 @@ import os
 doc = App.ActiveDocument
 if doc is None:
     raise RuntimeError("No active document")
+doc.recompute()
+
+def _faces(obj):
+    shape = getattr(obj, "Shape", None)
+    is_null = getattr(shape, "isNull", None)
+    if shape is None or (callable(is_null) and bool(is_null())):
+        return []
+    return list(getattr(shape, "Faces", []) or [])
+
+with_faces = [
+    (obj, _faces(obj))
+    for obj in list(doc.Objects)
+]
+with_faces = [(obj, faces) for obj, faces in with_faces if faces]
 solid = next(
     (
         obj
-        for obj in list(doc.Objects)
-        if str(obj.TypeId) == "PartDesign::DesignExtrude"
+        for obj, _ignored in with_faces
+        if str(obj.TypeId) == "PartDesign::DesignBodyPublication"
     ),
     None,
 )
+if solid is None and with_faces:
+    solid = with_faces[0][0]
 if solid is None:
-    raise RuntimeError("No PartDesign::DesignExtrude to export")
+    raise RuntimeError("No object with Faces to export")
+shape = solid.Shape
 path = __EXPORT_PATH__
+parent = os.path.dirname(path)
+if parent:
+    os.makedirs(parent, exist_ok=True)
+writer = "Import.export"
 Import.export([solid], path)
+if not os.path.isfile(path) or os.path.getsize(path) < 1:
+    exporter = getattr(shape, "exportStep", None)
+    if not callable(exporter):
+        raise RuntimeError("Shape.exportStep is unavailable")
+    exporter(path)
+    writer = "Shape.exportStep"
+if not os.path.isfile(path):
+    raise RuntimeError("STEP was not written at " + path)
+size = os.path.getsize(path)
+if size < 1:
+    raise RuntimeError("STEP at " + path + " is empty")
 result = {
     "exported_path": path,
-    "bytes": os.path.getsize(path),
+    "bytes": size,
     "object": str(solid.Name),
     "type_id": str(solid.TypeId),
+    "writer": writer,
+    "face_count": len(_faces(solid)),
 }
 """
 
@@ -237,6 +363,7 @@ def workflow_run_python(recipe_id: str, *, export_path: str = "") -> str:
         "select_sketch": SELECT_SKETCH_PYTHON,
         "leave_active_sketch": LEAVE_ACTIVE_SKETCH_PYTHON,
         "dismiss_document_recovery": DISMISS_DOCUMENT_RECOVERY_PYTHON,
+        "accept_design_task": ACCEPT_DESIGN_TASK_PYTHON,
         "export_step": EXPORT_STEP_PYTHON.replace(
             "__EXPORT_PATH__", json.dumps(str(export_path))
         ),
@@ -548,6 +675,53 @@ class FakeAgentState:
                     "command_active": command_active,
                 },
             }
+        if "vibecad.workflow-harness:accept_design_task" in source:
+            if document is None:
+                return {
+                    "ok": False,
+                    "failure_code": "SCRIPT_FAILED",
+                    "error": "No active document",
+                }
+            if not any(bool(obj.get("design_task")) for obj in document["objects"]):
+                return {
+                    "ok": False,
+                    "failure_code": "SCRIPT_FAILED",
+                    "error": "The Design operation task panel did not open",
+                }
+            if "QDialogButtonBox" not in source:
+                return {
+                    "ok": False,
+                    "failure_code": "SCRIPT_FAILED",
+                    "error": "No visible task QDialogButtonBox OK",
+                }
+            for obj in document["objects"]:
+                obj["design_task"] = False
+            publication = next(
+                (
+                    obj
+                    for obj in document["objects"]
+                    if obj["type_id"] == "PartDesign::DesignBodyPublication"
+                ),
+                None,
+            )
+            if publication is None:
+                publication = {
+                    "name": "BodyResult",
+                    "type_id": "PartDesign::DesignBodyPublication",
+                    "label": "BodyResult",
+                    "shape_null": False,
+                    "face_count": 3,
+                }
+                document["objects"].append(publication)
+            return {
+                "ok": True,
+                "result": {
+                    "accepted": True,
+                    "button": "Ok",
+                    "publication": publication["name"],
+                    "type_id": publication["type_id"],
+                },
+            }
         if "vibecad.workflow-harness:export_step" in source:
             if document is None:
                 return {
@@ -555,19 +729,32 @@ class FakeAgentState:
                     "failure_code": "SCRIPT_FAILED",
                     "error": "No active document",
                 }
+
+            def _has_faces(obj: dict[str, Any]) -> bool:
+                return (
+                    int(obj.get("face_count") or 0) > 0
+                    and not bool(obj.get("shape_null"))
+                )
+
             solid = next(
                 (
                     obj
                     for obj in document["objects"]
-                    if obj["type_id"] == "PartDesign::DesignExtrude"
+                    if obj["type_id"] == "PartDesign::DesignBodyPublication"
+                    and _has_faces(obj)
                 ),
                 None,
             )
             if solid is None:
+                solid = next(
+                    (obj for obj in document["objects"] if _has_faces(obj)),
+                    None,
+                )
+            if solid is None:
                 return {
                     "ok": False,
                     "failure_code": "SCRIPT_FAILED",
-                    "error": "No PartDesign::DesignExtrude to export",
+                    "error": "No object with Faces to export",
                 }
             path = Path(self.export_dir) / f"{document['name']}.step"
             path.write_text(
@@ -582,6 +769,8 @@ class FakeAgentState:
                     "bytes": path.stat().st_size,
                     "object": solid["name"],
                     "type_id": solid["type_id"],
+                    "writer": "Import.export",
+                    "face_count": int(solid.get("face_count") or 0),
                 },
                 "exported_path": self.exported_path,
             }
@@ -814,6 +1003,9 @@ class FakeAgentState:
                     "name": "Extrude",
                     "type_id": "PartDesign::DesignExtrude",
                     "label": "Extrude",
+                    "shape_null": True,
+                    "face_count": 0,
+                    "design_task": True,
                 }
             )
             return {"ok": True, **details}

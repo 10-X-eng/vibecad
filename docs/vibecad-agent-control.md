@@ -451,12 +451,29 @@ kill leaves that modal under the next Choose Orientation; kind
 `dialog` text `OK` then matches every visible `QDialog` and never
 lands. A pass
 leaves `PartDesign::Body`, a `Sketcher::SketchObject` with
-`GeometryCount >= 1`, and `PartDesign::DesignExtrude` in the
-tree. Export does not click `Std_Export`: that command's
+`GeometryCount >= 1`, `PartDesign::DesignExtrude`, and
+`PartDesign::DesignBodyPublication` (`BodyResult`) in the
+tree. Kind `dialog` text `OK` looks for a `QDialog` titled OK
+and does not see the Extrude OK in the Tasks dock. The harness
+accepts that task the same way
+`TestDesignProfileRegionsGui._close_task` does: a visible
+`QDialogButtonBox` OK through `/v1/run`, then waits until
+`Gui.Control.activeDialog` is gone. After that OK,
+`DesignExtrude.Shape` stays null; the solid with Faces is the
+publication. Export does not click `Std_Export`: that command's
 `activated()` opens `FileDialog::getSaveFileName`, which would
-hold the HTTP request. The harness writes the solid with
-`Import.export` from `src/Mod/Import/App/AppImportPy.cpp`, the
-same exporter the file dialog would call.
+hold the HTTP request. `Import.export` is the exporter that
+dialog would call (`AppImportPy.cpp`). `WriterStep::write` only
+throws on OCCT `RetError` / `RetFail` / `RetStop`, so it can
+return without creating the file. Live 6714cd65 then failed in
+`os.path.getsize` (`WinError 2`) on
+`%LOCALAPPDATA%\Temp\vibecad-workflow-harness.step`. The
+harness writes the object that actually has Faces, preferring
+`PartDesign::DesignBodyPublication`, tries `Import.export`, and
+if that path is still missing or empty writes
+`solid.Shape.exportStep` (`TopoShapePy` / `TopoShape.cpp`). It
+does not report success unless that file exists and is
+non-empty.
 A successful trigger
 counts as applied even when creating a document moves Qt focus;
 restoration fields stay on the payload for evidence. Optional `expected_process_id` and

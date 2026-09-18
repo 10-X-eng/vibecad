@@ -43,6 +43,7 @@ def test_workflow_harness_reuses_the_tour_click_route() -> None:
     assert "PartDesign_Pad" not in workflows
     assert "Part.Circle" in channel
     assert "Import.export" in channel
+    assert "exportStep" in channel
     assert "addGeometry" in channel
     assert "/v1/run" in channel
     agent_control = (
@@ -59,6 +60,11 @@ def test_workflow_harness_reuses_the_tour_click_route() -> None:
     assert "pyautogui" not in channel
     assert "SetCursorPos" not in channel
     assert "SendInput" not in channel
+    assert "accept_design_task" in workflows
+    assert "accept_design_task" in channel
+    assert "QDialogButtonBox" in channel
+    assert "DesignBodyPublication" in channel
+    assert "DesignBodyPublication" in workflows
 
 
 def test_workflow_harness_does_not_turn_the_tour_into_a_test() -> None:

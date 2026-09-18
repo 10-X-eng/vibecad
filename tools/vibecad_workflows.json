@@ -112,6 +112,21 @@
               "PartDesign::DesignExtrude"
             ]
           }
+        },
+        {
+          "id": "accept_design_task",
+          "run": {
+            "id": "accept_design_task"
+          },
+          "check": {
+            "run_ok": true,
+            "tree_type_ids": [
+              "PartDesign::Body",
+              "Sketcher::SketchObject",
+              "PartDesign::DesignExtrude",
+              "PartDesign::DesignBodyPublication"
+            ]
+          }
         }
       ]
     },

@@ -237,6 +237,11 @@ def main() -> int:
     extrude_step = next(
         step for step in sketch_workflow["steps"] if step.get("id") == "click_extrude"
     )
+    accept_step = next(
+        step
+        for step in sketch_workflow["steps"]
+        if step.get("id") == "accept_design_task"
+    )
     place_step = next(
         step
         for step in sketch_workflow["steps"]
@@ -248,6 +253,11 @@ def main() -> int:
     extrude_type_ids = {
         str(item.get("type_id") or "")
         for item in (extrude_step.get("tree") or {}).get("objects") or []
+        if isinstance(item, dict)
+    }
+    accept_type_ids = {
+        str(item.get("type_id") or "")
+        for item in (accept_step.get("tree") or {}).get("objects") or []
         if isinstance(item, dict)
     }
     export_result = (export_step.get("click_response") or {}).get("result") or {}
@@ -278,6 +288,22 @@ def main() -> int:
             selected = client.run(channel.workflow_run_python("select_sketch"))
             filled_extrude = client.click("action", "PartDesign_DesignExtrude")
             filled_tree = client.inspect_tree()
+            export_before_accept = client.run(
+                channel.workflow_run_python(
+                    "export_step",
+                    export_path=str(Path(temp) / "before-accept.step"),
+                )
+            )
+            accepted_task = client.run(
+                channel.workflow_run_python("accept_design_task")
+            )
+            after_accept = client.inspect_tree()
+            export_after_accept = client.run(
+                channel.workflow_run_python(
+                    "export_step",
+                    export_path=str(Path(temp) / "after-accept.step"),
+                )
+            )
         finally:
             server.shutdown()
             server.server_close()
@@ -292,6 +318,11 @@ def main() -> int:
     filled_type_ids = {
         str(item.get("type_id") or "")
         for item in ((filled_tree.get("result") or {}).get("objects") or [])
+        if isinstance(item, dict)
+    }
+    after_accept_type_ids = {
+        str(item.get("type_id") or "")
+        for item in ((after_accept.get("result") or {}).get("objects") or [])
         if isinstance(item, dict)
     }
     rectangle_added_profile = any(
@@ -311,24 +342,35 @@ def main() -> int:
                 "place_closed_profile",
                 "select_sketch",
                 "click_extrude",
+                "accept_design_task",
             ]
             and place_step.get("passed") is True
             and extrude_step.get("passed") is True
+            and accept_step.get("passed") is True
             and "PartDesign::DesignExtrude" in extrude_type_ids
+            and "PartDesign::DesignBodyPublication" not in extrude_type_ids
+            and "PartDesign::DesignBodyPublication" in accept_type_ids
             and export_step.get("passed") is True
             and exported_path.endswith(".step")
             and export_bytes >= 1
+            and export_result.get("type_id") == "PartDesign::DesignBodyPublication"
+            and int(export_result.get("face_count") or 0) >= 1
             and "place_closed_circle" in channel_source
             and "leave_active_sketch" in channel_source
             and "leaveActiveSketch" in channel_source
+            and "accept_design_task" in channel_source
+            and "QDialogButtonBox" in channel_source
             and "Part.Circle" in channel_source
             and "addGeometry" in channel_source
-            and "Import.export" in channel_source,
+            and "Import.export" in channel_source
+            and "exportStep" in channel_source,
             {
                 "sketch_step_ids": sketch_step_ids,
                 "extrude_type_ids": sorted(extrude_type_ids),
+                "accept_type_ids": sorted(accept_type_ids),
                 "exported_path": exported_path,
                 "export_bytes": export_bytes,
+                "export_type_id": export_result.get("type_id"),
             },
         )
     )
@@ -355,7 +397,19 @@ def main() -> int:
             and (selected.get("result") or {}).get("command_active") is True
             and filled_extrude.get("ok") is True
             and not filled_extrude.get("error")
-            and "PartDesign::DesignExtrude" in filled_type_ids,
+            and "PartDesign::DesignExtrude" in filled_type_ids
+            and "PartDesign::DesignBodyPublication" not in filled_type_ids
+            and export_before_accept.get("ok") is False
+            and "Faces" in str(export_before_accept.get("error") or "")
+            and accepted_task.get("ok") is True
+            and (accepted_task.get("result") or {}).get("type_id")
+            == "PartDesign::DesignBodyPublication"
+            and "PartDesign::DesignBodyPublication" in after_accept_type_ids
+            and export_after_accept.get("ok") is True
+            and (export_after_accept.get("result") or {}).get("type_id")
+            == "PartDesign::DesignBodyPublication"
+            and int((export_after_accept.get("result") or {}).get("face_count") or 0)
+            >= 1,
             {
                 "pad_while_editing": pad_while_editing.get("failure_code"),
                 "model_while_editing": model_while_editing.get("failure_code"),
@@ -365,6 +419,11 @@ def main() -> int:
                 "selected_sub": (selected.get("result") or {}).get("sub"),
                 "empty_type_ids": sorted(empty_type_ids),
                 "filled_type_ids": sorted(filled_type_ids),
+                "export_before_accept": export_before_accept.get("error"),
+                "after_accept_type_ids": sorted(after_accept_type_ids),
+                "export_after_type": (export_after_accept.get("result") or {}).get(
+                    "type_id"
+                ),
             },
         )
     )
