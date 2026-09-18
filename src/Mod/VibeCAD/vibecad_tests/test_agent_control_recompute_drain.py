@@ -43,12 +43,12 @@ class _GatedDocument:
         self.PresentationUpdateActive = presentation
         self.Objects = list(objects or [])
         self.recompute_calls = 0
-        self.recompute_force_calls = 0
 
     def recompute(self, *args: Any, **kwargs: Any) -> None:
         self.recompute_calls += 1
-        if args or kwargs.get("force"):
-            self.recompute_force_calls += 1
+        for obj in self.Objects:
+            if getattr(obj, "State", None) is not None:
+                obj.State = ["Up-to-date"]
 
 
 def test_recompute_gates_use_exposed_document_proxies() -> None:
@@ -261,6 +261,12 @@ class _Feature:
             self.GeneratedOccurrenceCount = generated
         if tip is not None:
             self.Tip = tip
+        self.Originals: list[Any] = []
+        self.touch_calls = 0
+
+    def touch(self) -> None:
+        self.touch_calls += 1
+        self.State = ["Touched"]
 
 
 def test_shape_signature_uses_volume_and_hash() -> None:
@@ -273,7 +279,7 @@ def test_solid_readiness_ignores_plain_pads() -> None:
     pad = _Feature("Pad001", type_id="PartDesign::Pad", volume=10.0)
     readiness = control._solid_readiness(SimpleNamespace(Objects=[pad]))
     assert readiness["items"] == ()
-    assert readiness["needs_force"] is False
+    assert readiness["needs_dirty"] is False
 
 
 def test_solid_readiness_flags_tip_volume_mismatch() -> None:
@@ -281,7 +287,7 @@ def test_solid_readiness_flags_tip_volume_mismatch() -> None:
     body = _Feature("Body", type_id="PartDesign::Body", volume=3793.0, tip=tip)
     readiness = control._solid_readiness(SimpleNamespace(Objects=[body, tip]))
     assert readiness["tip_mismatch"] is True
-    assert readiness["needs_force"] is True
+    assert readiness["needs_dirty"] is True
 
 
 def test_pattern_rebuild_incomplete_uses_diagnostics() -> None:
@@ -337,6 +343,8 @@ def test_drain_recompute_forces_when_body_tip_volumes_differ() -> None:
 
     def recompute(*_args: Any, **_kwargs: Any) -> None:
         document.recompute_calls += 1
+        body.State = ["Up-to-date"]
+        tip.State = ["Up-to-date"]
         if document.recompute_calls >= 2:
             body.Shape.Volume = 3925.23
 
@@ -365,6 +373,7 @@ def test_drain_recompute_forces_when_rejected_solids_remain() -> None:
 
     def recompute(*_args: Any, **_kwargs: Any) -> None:
         document.recompute_calls += 1
+        polar.State = ["Up-to-date"]
         if document.recompute_calls >= 2:
             polar.RejectedSolidCount = 0
             polar.Shape.Volume = 3925.23
@@ -381,7 +390,7 @@ def test_drain_recompute_forces_when_rejected_solids_remain() -> None:
     assert result["recompute_calls"] >= 2
 
 
-def test_drain_recompute_forces_once_for_stable_pattern_tip() -> None:
+def test_drain_recompute_dirties_pattern_tip_once_when_already_stable() -> None:
     polar = _Feature(
         "PolarPattern",
         type_id="PartDesign::PolarPattern",
@@ -398,8 +407,61 @@ def test_drain_recompute_forces_once_for_stable_pattern_tip() -> None:
     )
     assert result["ok"] is True
     assert document.recompute_calls == 2
-    assert document.recompute_force_calls >= 1
+    assert polar.touch_calls >= 1
     assert result["recompute_calls"] == 2
+
+
+def test_drain_recompute_dirties_until_wrong_pattern_volume_stabilizes() -> None:
+    polar = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        volume=3837.27,
+        occurrences=6,
+        generated=6,
+    )
+    document = _GatedDocument(objects=[polar])
+
+    def recompute(*_args: Any, **_kwargs: Any) -> None:
+        document.recompute_calls += 1
+        polar.State = ["Up-to-date"]
+        if polar.touch_calls:
+            polar.Shape.Volume = 3925.23
+
+    document.recompute = recompute  # type: ignore[method-assign]
+    result = control._drain_recompute(
+        document,
+        timeout_s=5.0,
+        pump=lambda: None,
+        clock=_TickClock(),
+    )
+    assert result["ok"] is True
+    assert polar.Shape.Volume == 3925.23
+    assert polar.touch_calls >= 1
+    assert result["recompute_calls"] >= 3
+
+
+def test_drain_recompute_touches_tip_and_pad_originals() -> None:
+    pad = _Feature("Pad001", type_id="PartDesign::Pad", volume=8.0)
+    tip = _Feature(
+        "PolarPattern",
+        type_id="PartDesign::PolarPattern",
+        volume=3925.23,
+        occurrences=6,
+        generated=6,
+    )
+    tip.Originals = [pad]
+    body = _Feature("Body", type_id="PartDesign::Body", volume=3925.23, tip=tip)
+    document = _GatedDocument(objects=[body, tip, pad])
+    result = control._drain_recompute(
+        document,
+        timeout_s=5.0,
+        pump=lambda: None,
+        clock=_TickClock(),
+    )
+    assert result["ok"] is True
+    assert tip.touch_calls >= 1
+    assert pad.touch_calls >= 1
+    assert body.touch_calls >= 1
 
 
 def test_run_script_drain_timeout_is_hard_failure(monkeypatch) -> None:
@@ -417,7 +479,7 @@ def test_run_script_drain_timeout_is_hard_failure(monkeypatch) -> None:
     assert payload["recompute_calls"] == 1
 
 
-def test_run_script_patterned_tip_forces_idle_rebuild(monkeypatch) -> None:
+def test_run_script_patterned_tip_dirties_idle_rebuild(monkeypatch) -> None:
     polar = _Feature(
         "PolarPattern",
         type_id="PartDesign::PolarPattern",
@@ -434,5 +496,5 @@ def test_run_script_patterned_tip_forces_idle_rebuild(monkeypatch) -> None:
 
     assert payload["ok"] is True
     assert document.recompute_calls == 2
-    assert document.recompute_force_calls >= 1
+    assert polar.touch_calls >= 1
     assert payload["recompute_calls"] == 2

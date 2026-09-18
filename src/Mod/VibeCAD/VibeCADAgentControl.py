@@ -3089,13 +3089,13 @@ def _solid_readiness(document: Any) -> dict[str, Any]:
     force_targets: list[Any] = []
     incomplete = False
     tip_mismatch = False
-    needs_force = False
+    needs_dirty = False
     for obj in getattr(document, "Objects", None) or ():
         patterned = _is_patterned_feature(obj)
         body = _is_part_design_body(obj)
         if not patterned and not body:
             continue
-        needs_force = True
+        needs_dirty = True
         force_targets.append(obj)
         name = str(getattr(obj, "Name", "") or id(obj))
         items.append((name, _shape_signature(getattr(obj, "Shape", None))))
@@ -3120,36 +3120,97 @@ def _solid_readiness(document: Any) -> dict[str, Any]:
         "items": tuple(items),
         "incomplete": incomplete,
         "tip_mismatch": tip_mismatch,
-        "needs_force": needs_force,
+        "needs_dirty": needs_dirty,
         "force_targets": tuple(force_targets),
     }
 
 
-def _call_recompute(
-    recompute_call: Any,
-    *,
-    targets: tuple[Any, ...] | list[Any] | None = None,
-    force: bool = False,
-) -> None:
-    if not callable(recompute_call):
-        return
-    if force:
-        try:
-            if targets:
-                recompute_call(list(targets), True)
-            else:
-                recompute_call(None, True)
+def _document_touched_objects(document: Any) -> tuple[Any, ...]:
+    touched: list[Any] = []
+    for obj in getattr(document, "Objects", None) or ():
+        state = getattr(obj, "State", None)
+        if state is None:
+            continue
+        if "Touched" in list(state):
+            touched.append(obj)
+    return tuple(touched)
+
+
+def _linked_rebuild_objects(obj: Any) -> tuple[Any, ...]:
+    linked: list[Any] = []
+    for attr in ("Originals", "BaseFeature"):
+        value = getattr(obj, attr, None)
+        if value is None:
+            continue
+        get_values = getattr(value, "getValues", None)
+        if callable(get_values):
+            try:
+                value = get_values()
+            except Exception:
+                continue
+        if isinstance(value, (list, tuple)):
+            linked.extend(item for item in value if item is not None)
+        else:
+            linked.append(value)
+    return tuple(linked)
+
+
+def _collect_dirty_targets(
+    readiness: dict[str, Any],
+    extra: tuple[Any, ...] | list[Any] = (),
+) -> tuple[Any, ...]:
+    targets: list[Any] = []
+    seen: set[int] = set()
+
+    def add(obj: Any) -> None:
+        if obj is None:
             return
-        except TypeError:
-            pass
-        for obj in targets or ():
-            touch = getattr(obj, "touch", None)
-            if callable(touch):
-                try:
-                    touch()
-                except Exception:
-                    pass
-    recompute_call()
+        marker = id(obj)
+        if marker in seen:
+            return
+        seen.add(marker)
+        targets.append(obj)
+
+    for obj in readiness.get("force_targets") or ():
+        add(obj)
+        for linked in _linked_rebuild_objects(obj):
+            add(linked)
+    for obj in extra:
+        add(obj)
+    return tuple(targets)
+
+
+def _readiness_volume_key(
+    items: tuple[tuple[str, tuple[Any, ...]], ...],
+) -> tuple[tuple[str, Any], ...]:
+    # hashCode can change on every execute; Volume is the live flake metric.
+    return tuple((name, signature[0] if signature else None) for name, signature in items)
+
+
+def _touch_objects(targets: tuple[Any, ...] | list[Any]) -> int:
+    touched = 0
+    for obj in targets:
+        touch = getattr(obj, "touch", None)
+        if not callable(touch):
+            continue
+        try:
+            touch()
+        except Exception:
+            continue
+        touched += 1
+    return touched
+
+
+def _call_recompute(recompute_call: Any) -> None:
+    if callable(recompute_call):
+        recompute_call()
+
+
+def _dirty_and_recompute(recompute_call: Any, targets: tuple[Any, ...]) -> None:
+    """Live propeller: idle recompute is a no-op; touch Tip/Pad then rebuild."""
+
+    _touch_objects(targets)
+    _call_recompute(recompute_call)
 
 
 def _pump_recompute_events(gui: Any | None = None) -> None:
@@ -3189,10 +3250,10 @@ def _drain_recompute(
 
     Document::recompute can return 0 on the GUI thread and queue
     scheduleGuiRecomputeFollowUp while cooperative / pending / presentation
-    gates are active. Stay on the document thread and pump Qt so that
-    follow-up runs. After flags go idle, PolarPattern/Body Tip solids must
-    also hold a stable Shape (and a forced rebuild runs once for patterned
-    tips, because idle ``recompute()`` is a no-op when nothing is Touched).
+    gates are active. Stay on the document thread and pump Qt so follow-up
+    runs. After flags go idle, a PartDesign Tip/pattern can still hold an
+    incomplete solid; a second idle recompute is a no-op. Dirty Tip/Pad
+    (``touch()``) and rebuild until Volume is stable across that pass.
     """
 
     now = clock or time.monotonic
@@ -3202,26 +3263,38 @@ def _drain_recompute(
     )
     calls = 0
     recompute_call = getattr(document, "recompute", None)
+    participants = _document_touched_objects(document)
     if callable(recompute_call):
         recompute_call()
         calls += 1
 
     advance = pump if pump is not None else lambda: _pump_recompute_events(gui)
-    previous_items: tuple[tuple[str, tuple[Any, ...]], ...] | None = None
-    forced = False
+    pre_dirty_volumes: tuple[tuple[str, Any], ...] | None = None
+
+    def timed_out() -> bool:
+        return now() >= deadline
+
+    def fail() -> dict[str, Any]:
+        return {
+            "ok": False,
+            "recompute_calls": calls,
+            "ms": (now() - started) * 1000.0,
+            "error": "RECOMPUTE_DRAIN_TIMEOUT",
+        }
+
+    def dirty_rebuild(readiness: dict[str, Any]) -> None:
+        nonlocal calls
+        targets = _collect_dirty_targets(readiness, participants)
+        _dirty_and_recompute(recompute_call, targets)
+        calls += 1
+
     while True:
         advance()
         blocked = _recompute_gates_block(document)
         touched = _document_has_touched_objects(document)
         if blocked or touched:
-            previous_items = None
-            if now() >= deadline:
-                return {
-                    "ok": False,
-                    "recompute_calls": calls,
-                    "ms": (now() - started) * 1000.0,
-                    "error": "RECOMPUTE_DRAIN_TIMEOUT",
-                }
+            if timed_out():
+                return fail()
             if not blocked and touched:
                 _call_recompute(recompute_call)
                 calls += 1
@@ -3229,63 +3302,20 @@ def _drain_recompute(
 
         readiness = _solid_readiness(document)
         if readiness["incomplete"] or readiness["tip_mismatch"]:
-            previous_items = None
-            if now() >= deadline:
-                return {
-                    "ok": False,
-                    "recompute_calls": calls,
-                    "ms": (now() - started) * 1000.0,
-                    "error": "RECOMPUTE_DRAIN_TIMEOUT",
-                }
-            _call_recompute(
-                recompute_call,
-                targets=readiness["force_targets"],
-                force=True,
-            )
-            calls += 1
-            forced = True
+            if timed_out():
+                return fail()
+            dirty_rebuild(readiness)
+            pre_dirty_volumes = None
             continue
 
         items = readiness["items"]
-        if items:
-            if previous_items is None:
-                previous_items = items
-                if now() >= deadline:
-                    return {
-                        "ok": False,
-                        "recompute_calls": calls,
-                        "ms": (now() - started) * 1000.0,
-                        "error": "RECOMPUTE_DRAIN_TIMEOUT",
-                    }
-                continue
-            if previous_items != items:
-                previous_items = None
-                if now() >= deadline:
-                    return {
-                        "ok": False,
-                        "recompute_calls": calls,
-                        "ms": (now() - started) * 1000.0,
-                        "error": "RECOMPUTE_DRAIN_TIMEOUT",
-                    }
-                _call_recompute(recompute_call)
-                calls += 1
-                continue
-            if readiness["needs_force"] and not forced:
-                previous_items = None
-                if now() >= deadline:
-                    return {
-                        "ok": False,
-                        "recompute_calls": calls,
-                        "ms": (now() - started) * 1000.0,
-                        "error": "RECOMPUTE_DRAIN_TIMEOUT",
-                    }
-                _call_recompute(
-                    recompute_call,
-                    targets=readiness["force_targets"],
-                    force=True,
-                )
-                calls += 1
-                forced = True
+        if items and readiness["needs_dirty"]:
+            volumes = _readiness_volume_key(items)
+            if pre_dirty_volumes is None or volumes != pre_dirty_volumes:
+                if timed_out():
+                    return fail()
+                pre_dirty_volumes = volumes
+                dirty_rebuild(readiness)
                 continue
 
         return {
