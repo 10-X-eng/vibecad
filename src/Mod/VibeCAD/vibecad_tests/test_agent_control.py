@@ -1924,6 +1924,124 @@ def test_ui_menu_click_closes_popup_and_restores_focus(monkeypatch) -> None:
     assert application.popup is None
 
 
+def test_ui_action_click_triggers_named_qt_action(monkeypatch) -> None:
+    class Point:
+        def __init__(self, x: int, y: int) -> None:
+            self._x = x
+            self._y = y
+
+        def x(self) -> int:
+            return self._x
+
+        def y(self) -> int:
+            return self._y
+
+    class Action:
+        def __init__(self) -> None:
+            self.triggered = 0
+
+        def text(self) -> str:
+            return "&New"
+
+        def objectName(self) -> str:  # noqa: N802
+            return "Std_New"
+
+        def isEnabled(self) -> bool:  # noqa: N802
+            return True
+
+        def isVisible(self) -> bool:  # noqa: N802
+            return True
+
+        def menu(self):
+            return None
+
+        def trigger(self) -> None:
+            self.triggered += 1
+            application.focus = self
+
+    action = Action()
+
+    class ToolBar:
+        def actions(self) -> list[Action]:
+            return [action]
+
+    toolbar = ToolBar()
+
+    class MenuBar:
+        def actions(self) -> list:
+            return []
+
+    window = SimpleNamespace(
+        menuBar=lambda: MenuBar(),
+        actions=lambda: [],
+        findChildren=lambda _kind: [toolbar],
+    )
+
+    class FocusWidget:
+        def setFocus(self, _reason=None) -> None:  # noqa: N802
+            application.focus = self
+
+    focus_widget = FocusWidget()
+    application = SimpleNamespace(
+        focus=focus_widget,
+        active_window=window,
+        popup=None,
+    )
+    qt_core = SimpleNamespace(
+        Qt=SimpleNamespace(
+            LeftButton="left",
+            NoModifier="none",
+            OtherFocusReason="other",
+        )
+    )
+    qt_gui = SimpleNamespace(QCursor=SimpleNamespace(pos=lambda: Point(10, 20)))
+    qt_widgets = SimpleNamespace(
+        QTabBar=object,
+        QToolBar=object,
+        QApplication=SimpleNamespace(
+            processEvents=lambda: None,
+            focusWidget=lambda: application.focus,
+            activeWindow=lambda: application.active_window,
+            activePopupWidget=lambda: application.popup,
+        ),
+    )
+
+    class QTest:
+        @staticmethod
+        def mouseClick(_widget, _button, _modifiers, _point) -> None:  # noqa: N802
+            raise AssertionError("action clicks must not use QTest.mouseClick")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=qt_core, QtGui=qt_gui, QtWidgets=qt_widgets),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide6",
+        SimpleNamespace(QtTest=SimpleNamespace(QTest=QTest)),
+    )
+    monkeypatch.setattr(
+        control,
+        "_gui",
+        lambda: SimpleNamespace(GuiUp=True, getMainWindow=lambda: window),
+    )
+
+    payload = control.dispatch("ui_click", {"kind": "action", "text": "Std_New"})
+    assert payload["ok"] is True
+    assert payload["input_method"] == "qt_in_process_action_trigger"
+    assert payload["physical_cursor_control"] == "none"
+    assert payload["object_name"] == "Std_New"
+    assert payload["semantic_verified"] is True
+    assert payload["interaction_restored"] is True
+    assert action.triggered == 1
+    assert application.focus is focus_widget
+
+    command_alias = control.dispatch("ui_click", {"kind": "command", "text": "New"})
+    assert command_alias["ok"] is True
+    assert action.triggered == 2
+
+
 def test_screenshot_captures_the_visible_vibecad_window(tmp_path, monkeypatch) -> None:
     target = tmp_path / "visible-vibecad.png"
 
@@ -2907,6 +3025,12 @@ def test_cli_maps_semantic_menu_snapshot_and_independent_ui_click() -> None:
         "expected_process_id": 1234,
         "expected_index": 7,
     }
+
+    action_click = cli.build_parser().parse_args(
+        ["ui-click", "--kind", "action", "--text", "Std_New"]
+    )
+    assert cli._command_arguments(action_click)["kind"] == "action"
+    assert cli._http_route(action_click.command) == ("POST", "/v1/ui/click")
 
     screenshot = cli.build_parser().parse_args(
         ["screenshot", "--path", "C:\\Evidence\\vibecad.png"]

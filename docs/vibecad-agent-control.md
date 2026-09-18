@@ -321,7 +321,7 @@ owner's network controls.
 | POST | `/v1/close` | optional `document`, explicit `discard_unsaved` | Close without silently discarding a modified document |
 | GET | `/v1/ui/menus` | | Live top-level menu names, indices, visibility, and screen geometry |
 | GET | `/v1/ui/ribbon` | | Live ribbon names, workbenches, indices, selection, and screen geometry |
-| POST | `/v1/ui/click` | `{"kind":"menu|ribbon","text":"..."}`, optional exact PID/index | Activate one semantic Qt target without moving or clicking the OS cursor |
+| POST | `/v1/ui/click` | `{"kind":"menu|ribbon|action","text":"..."}`, optional exact PID/index | Activate one semantic Qt target without moving or clicking the OS cursor |
 | POST | `/v1/run` | `{"python":"..."}` or `{"script":"..."}` plus optional `path`, `recompute` | Exec against the active doc |
 | GET | `/v1/operations/{operation_id}` | | Read the in-memory state/result of a client-identified operation without entering the document thread |
 | GET/POST | `/v1/aero` | operation payload for POST | Bounded Aero context and operations |
@@ -388,8 +388,11 @@ tracking explicitly by supplying an `operation_id` through the HTTP API.
 
 ### Semantic UI activation and the independent cursor
 
-`/v1/ui/click` targets an exact live Qt menu action or
-`VibeCADRibbonTabs` entry by visible text. Optional `expected_process_id` and
+`/v1/ui/click` targets an exact live Qt menu action,
+`VibeCADRibbonTabs` entry, or named command `QAction` by visible text
+or object name. Ribbon and menu kinds stay unchanged. The additive
+`action` kind calls `QAction.trigger()` in-process and still does not
+move or click the OS cursor. Optional `expected_process_id` and
 `expected_index` values make stale geometry fail closed. Ribbon clicks use an
 in-process Qt mouse event; top-level menus use a non-blocking in-process Qt
 popup. A menu popup is displayed for one bounded preview, then closed before

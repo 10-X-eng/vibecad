@@ -1475,7 +1475,7 @@ exact semantic VibeCAD targets without taking over the human's physical cursor.
 | POST | `/v1/close`       | optional `{{"document":"Name","discard_unsaved":false}}` | Close without silently discarding changes |
 | GET  | `/v1/ui/ribbon`   |                                   | Live semantic tab names and screen geometry |
 | GET  | `/v1/ui/menus`    |                                   | Live top-level menu names and screen geometry |
-| POST | `/v1/ui/click`    | `{{"kind":"ribbon","text":"Model"}}` | Activate a semantic Qt target without moving the physical cursor |
+| POST | `/v1/ui/click`    | `{{"kind":"ribbon|menu|action","text":"Model"}}` | Activate a semantic Qt target without moving the physical cursor |
 | GET/POST | `/v1/screenshot` | optional `{{"path":"...png","overwrite":false}}` | Capture the visible VibeCAD window |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
 | GET  | `/v1/operations/<operation_id>` |                         | Prove completion after a client timeout |
@@ -2434,6 +2434,65 @@ def _cursor_coordinates(QtGui: Any) -> dict[str, int]:
     return {"x": int(point.x()), "y": int(point.y())}
 
 
+def _clean_qt_label(value: Any) -> str:
+    return str(value or "").replace("&", "").strip()
+
+
+def _iter_qt_actions(owner: Any) -> list[Any]:
+    reader = getattr(owner, "actions", None)
+    if not callable(reader):
+        return []
+    try:
+        return list(reader() or [])
+    except Exception:
+        return []
+
+
+def _collect_named_qt_actions(
+    main_window: Any,
+    QtWidgets: Any,
+    target_text: str,
+) -> list[tuple[int, Any]]:
+    """Return QActions whose visible text or objectName equals target_text."""
+
+    seen: set[int] = set()
+    matches: list[tuple[int, Any]] = []
+
+    def consider(action: Any) -> None:
+        identity = id(action)
+        if identity in seen:
+            return
+        seen.add(identity)
+        text_reader = getattr(action, "text", None)
+        name_reader = getattr(action, "objectName", None)
+        text = _clean_qt_label(text_reader() if callable(text_reader) else "")
+        object_name = str(name_reader() if callable(name_reader) else "").strip()
+        if text == target_text or object_name == target_text:
+            matches.append((len(matches), action))
+        menu_reader = getattr(action, "menu", None)
+        menu = menu_reader() if callable(menu_reader) else None
+        if menu is not None:
+            for child in _iter_qt_actions(menu):
+                consider(child)
+
+    owners: list[Any] = [main_window]
+    menu_reader = getattr(main_window, "menuBar", None)
+    menu_bar = menu_reader() if callable(menu_reader) else None
+    if menu_bar is not None:
+        owners.append(menu_bar)
+    finder = getattr(main_window, "findChildren", None)
+    toolbar_type = getattr(QtWidgets, "QToolBar", None)
+    if callable(finder) and toolbar_type is not None:
+        try:
+            owners.extend(list(finder(toolbar_type) or []))
+        except Exception:
+            pass
+    for owner in owners:
+        for action in _iter_qt_actions(owner):
+            consider(action)
+    return matches
+
+
 def ui_click_target(
     kind: str,
     text: str,
@@ -2446,10 +2505,12 @@ def ui_click_target(
     target_kind = str(kind or "").strip().lower().replace("-", "_")
     if target_kind in {"tab", "ribbon_tab"}:
         target_kind = "ribbon"
-    if target_kind not in {"ribbon", "menu"}:
+    if target_kind in {"command", "button"}:
+        target_kind = "action"
+    if target_kind not in {"ribbon", "menu", "action"}:
         return failure(
             "UI_TARGET_KIND_INVALID",
-            "kind must be 'ribbon' or 'menu'.",
+            "kind must be 'ribbon', 'menu', or 'action'.",
             stage="schema",
         )
     target_text = str(text or "").strip()
@@ -2669,7 +2730,7 @@ def ui_click_target(
                 "click_queued": False,
                 **state,
             }
-        else:
+        elif target_kind == "menu":
             widget = main_window.menuBar()
             if widget is None or not bool(widget.isVisible()):
                 return failure(
@@ -2778,15 +2839,68 @@ def ui_click_target(
                 "click_queued": False,
                 **state,
             }
+        else:
+            matches = _collect_named_qt_actions(main_window, QtWidgets, target_text)
+            if len(matches) != 1:
+                return failure(
+                    "UI_TARGET_NOT_UNIQUE",
+                    (
+                        f"Expected exactly one action named {target_text!r}; "
+                        f"found {len(matches)}."
+                    ),
+                    stage="precondition",
+                )
+            target_index, action = matches[0]
+            if required_index is not None and required_index != target_index:
+                return failure(
+                    "UI_TARGET_INDEX_MISMATCH",
+                    f"Action {target_text!r} is index {target_index}, not {required_index}.",
+                    stage="precondition",
+                )
+            enabled_reader = getattr(action, "isEnabled", None)
+            visible_reader = getattr(action, "isVisible", None)
+            if (
+                callable(enabled_reader)
+                and not bool(enabled_reader())
+            ) or (
+                callable(visible_reader)
+                and not bool(visible_reader())
+            ):
+                return failure(
+                    "UI_TARGET_DISABLED",
+                    f"Action {target_text!r} is disabled or hidden.",
+                    stage="precondition",
+                )
+            trigger = getattr(action, "trigger", None)
+            if not callable(trigger):
+                return failure(
+                    "UI_TARGET_NOT_TRIGGERABLE",
+                    f"Action {target_text!r} cannot be triggered in-process.",
+                    stage="precondition",
+                )
+            trigger()
+            process_events()
+            state = interaction_state()
+            verified = bool(state["interaction_restored"])
+            name_reader = getattr(action, "objectName", None)
+            details = {
+                "target_kind": target_kind,
+                "target_text": target_text,
+                "target_index": target_index,
+                "object_name": str(name_reader() if callable(name_reader) else ""),
+                "active_action_restored": True,
+                "click_queued": False,
+                **state,
+            }
 
         cursor_after = _cursor_coordinates(QtGui)
         details.update(
             {
-                "input_method": (
-                    "qt_in_process_mouse_click"
-                    if target_kind == "ribbon"
-                    else "qt_in_process_menu_popup"
-                ),
+                "input_method": {
+                    "ribbon": "qt_in_process_mouse_click",
+                    "menu": "qt_in_process_menu_popup",
+                    "action": "qt_in_process_action_trigger",
+                }[target_kind],
                 "physical_cursor_control": "none",
                 "physical_cursor_before": cursor_before,
                 "physical_cursor_after": cursor_after,

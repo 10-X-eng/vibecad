@@ -1,0 +1,144 @@
+{
+  "schema": "vibecad.workflow-harness.v1",
+  "workflows": [
+    {
+      "id": "new_document",
+      "title": "New document",
+      "steps": [
+        {
+          "id": "open_file_menu",
+          "click": {
+            "kind": "menu",
+            "text": "File"
+          },
+          "check": {
+            "click_ok": true
+          }
+        },
+        {
+          "id": "click_new",
+          "click": {
+            "kind": "action",
+            "text": "Std_New"
+          },
+          "check": {
+            "document_count_min": 1,
+            "active_document": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "sketch_then_pad",
+      "title": "Sketch then pad",
+      "steps": [
+        {
+          "id": "seed_new_document",
+          "click": {
+            "kind": "action",
+            "text": "Std_New"
+          },
+          "check": {
+            "document_count_min": 1
+          }
+        },
+        {
+          "id": "select_model_ribbon",
+          "click": {
+            "kind": "ribbon",
+            "text": "Model"
+          },
+          "check": {
+            "click_ok": true
+          }
+        },
+        {
+          "id": "click_sketch",
+          "click": {
+            "kind": "action",
+            "text": "Sketcher_NewSketch"
+          },
+          "check": {
+            "tree_type_ids": [
+              "Sketcher::SketchObject"
+            ]
+          }
+        },
+        {
+          "id": "click_pad",
+          "click": {
+            "kind": "action",
+            "text": "PartDesign_Pad"
+          },
+          "check": {
+            "tree_type_ids": [
+              "Sketcher::SketchObject",
+              "PartDesign::Pad"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "export",
+      "title": "Export",
+      "steps": [
+        {
+          "id": "seed_new_document",
+          "click": {
+            "kind": "action",
+            "text": "Std_New"
+          },
+          "check": {
+            "document_count_min": 1
+          }
+        },
+        {
+          "id": "seed_sketch",
+          "click": {
+            "kind": "action",
+            "text": "Sketcher_NewSketch"
+          },
+          "check": {
+            "tree_type_ids": [
+              "Sketcher::SketchObject"
+            ]
+          }
+        },
+        {
+          "id": "seed_pad",
+          "click": {
+            "kind": "action",
+            "text": "PartDesign_Pad"
+          },
+          "check": {
+            "tree_type_ids": [
+              "PartDesign::Pad"
+            ]
+          }
+        },
+        {
+          "id": "open_file_menu",
+          "click": {
+            "kind": "menu",
+            "text": "File"
+          },
+          "check": {
+            "click_ok": true
+          }
+        },
+        {
+          "id": "click_export",
+          "click": {
+            "kind": "action",
+            "text": "Std_Export"
+          },
+          "check": {
+            "exported": true,
+            "export_bytes_min": 1
+          }
+        }
+      ]
+    }
+  ]
+}
