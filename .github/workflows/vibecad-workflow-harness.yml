@@ -1,0 +1,37 @@
+name: VibeCAD Workflow Harness
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibecad-workflow-harness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness:
+    name: Three-workflow click harness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Run harness self-test without a TypeSafe key
+        working-directory: tools
+        run: python vibecad_workflow_harness_selftest.py
+
+      - name: Run the three workflows against the fake click channel
+        working-directory: tools
+        run: python vibecad_workflow_harness.py --fake

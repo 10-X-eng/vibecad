@@ -1,0 +1,150 @@
+{
+  "schema": "vibecad.workflow-harness.v1",
+  "workflows": [
+    {
+      "id": "new_document",
+      "title": "New document",
+      "steps": [
+        {
+          "id": "click_new",
+          "click": {
+            "kind": "action",
+            "text": "Std_New"
+          },
+          "check": {
+            "document_count_min": 1,
+            "active_document": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "sketch_then_pad",
+      "title": "Sketch then pad",
+      "steps": [
+        {
+          "id": "select_model_ribbon",
+          "click": {
+            "kind": "ribbon",
+            "text": "Model"
+          },
+          "check": {
+            "click_ok": true
+          }
+        },
+        {
+          "id": "click_body",
+          "click": {
+            "kind": "action",
+            "text": "PartDesign_NewBody"
+          },
+          "check": {
+            "tree_type_ids": [
+              "PartDesign::Body"
+            ]
+          }
+        },
+        {
+          "id": "click_sketch",
+          "click": {
+            "kind": "action",
+            "text": "Sketcher_NewSketch"
+          },
+          "check": {
+            "click_ok": true
+          }
+        },
+        {
+          "id": "accept_sketch_orientation",
+          "click": {
+            "kind": "dialog",
+            "text": "OK"
+          },
+          "check": {
+            "tree_type_ids": [
+              "PartDesign::Body",
+              "Sketcher::SketchObject"
+            ]
+          }
+        },
+        {
+          "id": "leave_sketch",
+          "run": {
+            "id": "leave_active_sketch"
+          },
+          "check": {
+            "run_ok": true,
+            "tree_type_ids": [
+              "PartDesign::Body",
+              "Sketcher::SketchObject"
+            ]
+          }
+        },
+        {
+          "id": "place_closed_profile",
+          "run": {
+            "id": "place_closed_circle"
+          },
+          "check": {
+            "sketch_geometry_min": 1
+          }
+        },
+        {
+          "id": "select_sketch",
+          "run": {
+            "id": "select_sketch"
+          },
+          "check": {
+            "run_ok": true,
+            "command_active": "PartDesign_DesignExtrude"
+          }
+        },
+        {
+          "id": "click_extrude",
+          "click": {
+            "kind": "action",
+            "text": "PartDesign_DesignExtrude"
+          },
+          "check": {
+            "tree_type_ids": [
+              "PartDesign::Body",
+              "Sketcher::SketchObject",
+              "PartDesign::DesignExtrude"
+            ]
+          }
+        },
+        {
+          "id": "accept_design_task",
+          "run": {
+            "id": "accept_design_task"
+          },
+          "check": {
+            "run_ok": true,
+            "tree_type_ids": [
+              "PartDesign::Body",
+              "Sketcher::SketchObject",
+              "PartDesign::DesignExtrude",
+              "PartDesign::DesignBodyPublication"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "export",
+      "title": "Export",
+      "steps": [
+        {
+          "id": "export_step",
+          "run": {
+            "id": "export_step"
+          },
+          "check": {
+            "exported": true,
+            "export_bytes_min": 1
+          }
+        }
+      ]
+    }
+  ]
+}

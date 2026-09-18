@@ -1475,7 +1475,7 @@ exact semantic VibeCAD targets without taking over the human's physical cursor.
 | POST | `/v1/close`       | optional `{{"document":"Name","discard_unsaved":false}}` | Close without silently discarding changes |
 | GET  | `/v1/ui/ribbon`   |                                   | Live semantic tab names and screen geometry |
 | GET  | `/v1/ui/menus`    |                                   | Live top-level menu names and screen geometry |
-| POST | `/v1/ui/click`    | `{{"kind":"ribbon","text":"Model"}}` | Activate a semantic Qt target without moving the physical cursor |
+| POST | `/v1/ui/click`    | `{{"kind":"ribbon|menu|action|dialog","text":"Model"}}` | Activate a semantic Qt target without moving the physical cursor |
 | GET/POST | `/v1/screenshot` | optional `{{"path":"...png","overwrite":false}}` | Capture the visible VibeCAD window |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
 | GET  | `/v1/operations/<operation_id>` |                         | Prove completion after a client timeout |
@@ -2434,6 +2434,322 @@ def _cursor_coordinates(QtGui: Any) -> dict[str, int]:
     return {"x": int(point.x()), "y": int(point.y())}
 
 
+def _clean_qt_label(value: Any) -> str:
+    return str(value or "").replace("&", "").strip()
+
+
+def _iter_qt_actions(owner: Any) -> list[Any]:
+    reader = getattr(owner, "actions", None)
+    if not callable(reader):
+        return []
+    try:
+        return list(reader() or [])
+    except Exception:
+        return []
+
+
+def _collect_named_qt_actions(
+    main_window: Any,
+    QtWidgets: Any,
+    target_text: str,
+    QtGui: Any | None = None,
+) -> list[tuple[int, Any]]:
+    """Return QActions whose visible text or objectName equals target_text.
+
+    The live window registers commands as ``QAction`` children of the main
+    window. Searching only ``actions()`` on the window, menu bar, and
+    toolbars misses those, so this also uses ``findChildren(QAction)``.
+    """
+
+    seen: set[int] = set()
+    matches: list[tuple[int, Any]] = []
+
+    def consider(action: Any) -> None:
+        identity = id(action)
+        if identity in seen:
+            return
+        seen.add(identity)
+        text_reader = getattr(action, "text", None)
+        name_reader = getattr(action, "objectName", None)
+        text = _clean_qt_label(text_reader() if callable(text_reader) else "")
+        object_name = str(name_reader() if callable(name_reader) else "").strip()
+        if text == target_text or object_name == target_text:
+            matches.append((len(matches), action))
+        menu_reader = getattr(action, "menu", None)
+        menu = menu_reader() if callable(menu_reader) else None
+        if menu is not None:
+            for child in _iter_qt_actions(menu):
+                consider(child)
+
+    owners: list[Any] = [main_window]
+    menu_reader = getattr(main_window, "menuBar", None)
+    menu_bar = menu_reader() if callable(menu_reader) else None
+    if menu_bar is not None:
+        owners.append(menu_bar)
+    finder = getattr(main_window, "findChildren", None)
+    toolbar_type = getattr(QtWidgets, "QToolBar", None)
+    if callable(finder) and toolbar_type is not None:
+        try:
+            owners.extend(list(finder(toolbar_type) or []))
+        except Exception:
+            pass
+    action_type = None
+    if QtGui is not None:
+        action_type = getattr(QtGui, "QAction", None)
+    if action_type is None:
+        action_type = getattr(QtWidgets, "QAction", None)
+    if callable(finder) and action_type is not None:
+        try:
+            for child in list(finder(action_type) or []):
+                consider(child)
+        except Exception:
+            pass
+    for owner in owners:
+        for action in _iter_qt_actions(owner):
+            consider(action)
+    return matches
+
+
+def _qt_action_is_enabled(action: Any) -> bool:
+    reader = getattr(action, "isEnabled", None)
+    return not callable(reader) or bool(reader())
+
+
+def _qt_action_is_visible(action: Any) -> bool:
+    reader = getattr(action, "isVisible", None)
+    return not callable(reader) or bool(reader())
+
+
+def _pick_clickable_qt_action(
+    matches: list[tuple[int, Any]],
+) -> tuple[tuple[int, Any] | None, str]:
+    """Prefer the enabled action findChildren can see.
+
+    ``Gui.isCommandActive`` is ``Command.canInvoke()``. The click path used
+    to require exactly one name match and then abort if that copy was hidden.
+    The ribbon keeps the command ``QAction`` on a hidden standard toolbar and
+    may also keep a disabled placeholder, so that unique/first copy is not
+    the enabled Model-tab action.
+    """
+
+    if not matches:
+        return None, "none"
+    enabled_visible = [
+        item
+        for item in matches
+        if _qt_action_is_enabled(item[1]) and _qt_action_is_visible(item[1])
+    ]
+    if len(enabled_visible) == 1:
+        return enabled_visible[0], "enabled_visible"
+    if len(enabled_visible) > 1:
+        return None, "not_unique"
+    enabled = [item for item in matches if _qt_action_is_enabled(item[1])]
+    if len(enabled) == 1:
+        return enabled[0], "enabled"
+    if len(matches) == 1:
+        return matches[0], "disabled"
+    return None, "not_unique"
+
+
+def _qt_action_object_name(action: Any) -> str:
+    reader = getattr(action, "objectName", None)
+    return str(reader() if callable(reader) else "")
+
+
+def _named_command_for_action_click(
+    target_text: str,
+    matches: list[tuple[int, Any]],
+    action: Any | None,
+) -> str:
+    if action is not None:
+        name = _qt_action_object_name(action)
+        if name:
+            return name
+    for _index, candidate in matches:
+        name = _qt_action_object_name(candidate)
+        if name:
+            return name
+    return target_text
+
+
+def _command_is_active(gui: Any, name: str) -> bool:
+    """``Gui.isCommandActive`` is ``Command.canInvoke()``."""
+
+    checker = getattr(gui, "isCommandActive", None)
+    if callable(checker):
+        try:
+            return bool(checker(name))
+        except Exception:
+            return False
+    command_mod = getattr(gui, "Command", None)
+    getter = getattr(command_mod, "get", None)
+    if not callable(getter):
+        return False
+    try:
+        command = getter(name)
+    except Exception:
+        return False
+    if command is None:
+        return False
+    is_active = getattr(command, "isActive", None)
+    return callable(is_active) and bool(is_active())
+
+
+def _named_command_runner(gui: Any, name: str) -> Any | None:
+    command_mod = getattr(gui, "Command", None)
+    getter = getattr(command_mod, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        command = getter(name)
+    except Exception:
+        return None
+    runner = getattr(command, "run", None)
+    return runner if callable(runner) else None
+
+
+def _all_named_qt_actions_disabled(matches: list[tuple[int, Any]]) -> bool:
+    return bool(matches) and all(
+        not _qt_action_is_enabled(item[1]) for item in matches
+    )
+
+
+def _queue_qt_callback(QtCore: Any, callback: Any) -> bool:
+    """Queue ``callback`` on the next Qt event-loop turn.
+
+    Returns True when the callback was queued and has not run yet. A
+    modal ``QDialog.exec()`` inside a synchronous callback would hold
+    the HTTP dispatch until the dialog closed.
+    """
+
+    timer = getattr(QtCore, "QTimer", None)
+    single_shot = getattr(timer, "singleShot", None)
+    if not callable(single_shot) or not callable(callback):
+        return False
+    single_shot(0, callback)
+    return True
+
+
+def _click_visible_dialog(
+    target_text: str,
+    *,
+    required_index: int | None,
+    main_window: Any,
+    QtWidgets: Any,
+    application: Any,
+    process_events: Any,
+) -> dict[str, Any]:
+    """Accept a visible modal dialog without moving the OS cursor."""
+
+    finder = getattr(main_window, "findChildren", None)
+    dialog_type = getattr(QtWidgets, "QDialog", None)
+    candidates: list[Any] = []
+    if callable(finder) and dialog_type is not None:
+        try:
+            candidates.extend(list(finder(dialog_type) or []))
+        except Exception:
+            pass
+    modal_reader = getattr(application, "activeModalWidget", None)
+    if callable(modal_reader):
+        modal = modal_reader()
+        if modal is not None:
+            candidates.append(modal)
+
+    visible: list[Any] = []
+    seen: set[int] = set()
+    for dialog in candidates:
+        identity = id(dialog)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        visible_reader = getattr(dialog, "isVisible", None)
+        if callable(visible_reader) and bool(visible_reader()):
+            visible.append(dialog)
+
+    matches: list[Any] = []
+    for dialog in visible:
+        title_reader = getattr(dialog, "windowTitle", None)
+        title = _clean_qt_label(title_reader() if callable(title_reader) else "")
+        if title == target_text or target_text in {"OK", "Ok"}:
+            matches.append(dialog)
+    if target_text in {"OK", "Ok"} and not matches and len(visible) == 1:
+        matches = list(visible)
+    if len(matches) != 1:
+        return failure(
+            "UI_TARGET_NOT_UNIQUE",
+            (
+                f"Expected exactly one visible dialog named {target_text!r}; "
+                f"found {len(matches)}."
+            ),
+            stage="precondition",
+        )
+    dialog = matches[0]
+    if required_index is not None and required_index != 0:
+        return failure(
+            "UI_TARGET_INDEX_MISMATCH",
+            f"Dialog {target_text!r} is index 0, not {required_index}.",
+            stage="precondition",
+        )
+
+    child_finder = getattr(dialog, "findChild", None)
+    radio_type = getattr(QtWidgets, "QRadioButton", None)
+    if callable(child_finder) and radio_type is not None:
+        xy = child_finder(radio_type, "XY_radioButton")
+        if xy is not None:
+            checked = getattr(xy, "isChecked", None)
+            if callable(checked) and not bool(checked()):
+                clicker = getattr(xy, "click", None)
+                if callable(clicker):
+                    clicker()
+
+    accepted = False
+    box_type = getattr(QtWidgets, "QDialogButtonBox", None)
+    ok_button = None
+    if callable(child_finder) and box_type is not None:
+        box = child_finder(box_type)
+        if box is not None:
+            ok_flag = getattr(box_type, "Ok", None)
+            if ok_flag is None:
+                ok_flag = getattr(getattr(box_type, "StandardButton", None), "Ok", None)
+            button_reader = getattr(box, "button", None)
+            if callable(button_reader) and ok_flag is not None:
+                ok_button = button_reader(ok_flag)
+    if ok_button is not None:
+        clicker = getattr(ok_button, "click", None)
+        if callable(clicker):
+            clicker()
+            accepted = True
+    if not accepted:
+        accept = getattr(dialog, "accept", None)
+        if callable(accept):
+            accept()
+            accepted = True
+    if callable(process_events):
+        process_events()
+    if not accepted:
+        return failure(
+            "UI_CLICK_NOT_APPLIED",
+            f"Qt click did not activate dialog target {target_text!r}.",
+            stage="postcondition",
+        )
+    title_reader = getattr(dialog, "windowTitle", None)
+    return {
+        "target_kind": "dialog",
+        "target_text": target_text,
+        "target_index": 0,
+        "object_name": _clean_qt_label(
+            title_reader() if callable(title_reader) else ""
+        ),
+        "active_action_restored": True,
+        "click_queued": False,
+        "focus_restored": True,
+        "active_window_unchanged": True,
+        "popup_restored": True,
+        "interaction_restored": True,
+        "verified": True,
+    }
+
+
 def ui_click_target(
     kind: str,
     text: str,
@@ -2446,10 +2762,12 @@ def ui_click_target(
     target_kind = str(kind or "").strip().lower().replace("-", "_")
     if target_kind in {"tab", "ribbon_tab"}:
         target_kind = "ribbon"
-    if target_kind not in {"ribbon", "menu"}:
+    if target_kind in {"command", "button"}:
+        target_kind = "action"
+    if target_kind not in {"ribbon", "menu", "action", "dialog"}:
         return failure(
             "UI_TARGET_KIND_INVALID",
-            "kind must be 'ribbon' or 'menu'.",
+            "kind must be 'ribbon', 'menu', 'action', or 'dialog'.",
             stage="schema",
         )
     target_text = str(text or "").strip()
@@ -2669,7 +2987,7 @@ def ui_click_target(
                 "click_queued": False,
                 **state,
             }
-        else:
+        elif target_kind == "menu":
             widget = main_window.menuBar()
             if widget is None or not bool(widget.isVisible()):
                 return failure(
@@ -2778,15 +3096,147 @@ def ui_click_target(
                 "click_queued": False,
                 **state,
             }
+        elif target_kind == "action":
+            updater = getattr(getattr(gui, "Command", None), "update", None)
+            if callable(updater):
+                try:
+                    updater()
+                except Exception:
+                    pass
+            matches = _collect_named_qt_actions(
+                main_window, QtWidgets, target_text, QtGui
+            )
+            picked, pick_reason = _pick_clickable_qt_action(matches)
+            action = None
+            target_index = 0
+            if picked is not None:
+                target_index, action = picked
+            command_name = _named_command_for_action_click(
+                target_text, matches, action
+            )
+            command_active = _command_is_active(gui, command_name)
+            invoke = None
+            invoke_pick = pick_reason
+            object_name = (
+                _qt_action_object_name(action) if action is not None else command_name
+            )
+            disabled_failure = {
+                "action_pick": pick_reason,
+                "action_match_count": len(matches),
+                "command_active": command_active,
+            }
+            if picked is not None:
+                if required_index is not None and required_index != target_index:
+                    return failure(
+                        "UI_TARGET_INDEX_MISMATCH",
+                        (
+                            f"Action {target_text!r} is index {target_index}, "
+                            f"not {required_index}."
+                        ),
+                        stage="precondition",
+                        **disabled_failure,
+                    )
+                if pick_reason != "disabled" and _qt_action_is_enabled(action):
+                    invoke = getattr(action, "trigger", None)
+                elif command_active:
+                    invoke = _named_command_runner(gui, command_name)
+                    invoke_pick = "command_active"
+                else:
+                    return failure(
+                        "UI_TARGET_DISABLED",
+                        f"Action {target_text!r} is disabled or hidden.",
+                        stage="precondition",
+                        **disabled_failure,
+                    )
+            elif command_active and _all_named_qt_actions_disabled(matches):
+                invoke = _named_command_runner(gui, command_name)
+                invoke_pick = "command_active"
+            else:
+                return failure(
+                    "UI_TARGET_NOT_UNIQUE",
+                    (
+                        f"Expected exactly one action named {target_text!r}; "
+                        f"found {len(matches)}."
+                    ),
+                    stage="precondition",
+                    **disabled_failure,
+                )
+            if not callable(invoke):
+                return failure(
+                    "UI_TARGET_NOT_TRIGGERABLE",
+                    f"Action {target_text!r} cannot be triggered in-process.",
+                    stage="precondition",
+                    action_pick=invoke_pick,
+                    action_match_count=len(matches),
+                    command_active=command_active,
+                )
+            # Sketcher_NewSketch calls QDialog.exec() on this GUI thread.
+            # The HTTP worker waits for this dispatch, so a modal would
+            # hold /v1/ui/click and /v1/status until OK. Queue the
+            # trigger onto the next event-loop turn and return now.
+            # Disabled QAction.trigger() does not fire, so a canInvoke()
+            # match uses Gui.Command.get(name).run() instead.
+            queued = _queue_qt_callback(QtCore, invoke)
+            if not queued:
+                invoke()
+                process_events()
+            state = (
+                {
+                    "focus_restored": True,
+                    "active_window_unchanged": True,
+                    "popup_restored": True,
+                    "interaction_restored": True,
+                }
+                if queued
+                else interaction_state()
+            )
+            # Creating a document moves Qt focus. Restoration is
+            # reported but does not define whether the click landed.
+            verified = True
+            details = {
+                "target_kind": target_kind,
+                "target_text": target_text,
+                "target_index": target_index,
+                "object_name": object_name,
+                "action_match_count": len(matches),
+                "action_pick": invoke_pick,
+                "command_active": command_active,
+                "active_action_restored": True,
+                "click_queued": queued,
+                **state,
+            }
+        else:
+            details = _click_visible_dialog(
+                target_text,
+                required_index=required_index,
+                main_window=main_window,
+                QtWidgets=QtWidgets,
+                application=application,
+                process_events=process_events,
+            )
+            if details.get("ok") is False:
+                return details
+            verified = bool(details.pop("verified", True))
+            state = {
+                "focus_restored": bool(details.get("focus_restored", True)),
+                "active_window_unchanged": bool(
+                    details.get("active_window_unchanged", True)
+                ),
+                "popup_restored": bool(details.get("popup_restored", True)),
+                "interaction_restored": bool(
+                    details.get("interaction_restored", True)
+                ),
+            }
 
         cursor_after = _cursor_coordinates(QtGui)
         details.update(
             {
-                "input_method": (
-                    "qt_in_process_mouse_click"
-                    if target_kind == "ribbon"
-                    else "qt_in_process_menu_popup"
-                ),
+                "input_method": {
+                    "ribbon": "qt_in_process_mouse_click",
+                    "menu": "qt_in_process_menu_popup",
+                    "action": "qt_in_process_action_trigger",
+                    "dialog": "qt_in_process_dialog_button",
+                }[target_kind],
                 "physical_cursor_control": "none",
                 "physical_cursor_before": cursor_before,
                 "physical_cursor_after": cursor_after,
