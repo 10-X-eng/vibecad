@@ -31,6 +31,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import uuid
 from typing import Any, Callable
@@ -39,6 +40,14 @@ from urllib.parse import unquote, urlparse
 
 AGENT_HOST = "127.0.0.1"
 DEFAULT_AGENT_PORT = 8766
+RECOMPUTE_DRAIN_TIMEOUT_S = 30.0
+_RECOMPUTE_DRAIN_GATE_ATTRS = (
+    "CooperativeMutationActive",
+    "RecomputePending",
+    "PresentationUpdateActive",
+    "MutationBlockingPresentationUpdateActive",
+    "GuiRecomputeCoordinatorActive",
+)
 AGENT_PORT_ENV = "VIBECAD_AGENT_PORT"
 AGENT_HOME_ENV = "VIBECAD_AGENT_HOME"
 TOKEN_FILENAME = "token"
@@ -2948,6 +2957,107 @@ def capture_screenshot(
     }
 
 
+def _recompute_gates_block(document: Any) -> bool:
+    """True while Document::recompute would early-return and queue a follow-up.
+
+    Python already exposes CooperativeMutationActive, RecomputePending, and
+    PresentationUpdateActive. PresentationUpdateActive is a conservative
+    proxy for C++ mutation-blocking presentation. Coordinator activity is
+    covered by CooperativeMutationActive (beginCooperativeMutation) and by
+    GuiRecomputeCoordinatorActive if that getter is ever bound.
+    """
+
+    return any(
+        bool(getattr(document, name, False)) for name in _RECOMPUTE_DRAIN_GATE_ATTRS
+    )
+
+
+def _document_has_touched_objects(document: Any) -> bool:
+    for obj in getattr(document, "Objects", None) or ():
+        state = getattr(obj, "State", None)
+        if state is None:
+            continue
+        if "Touched" in list(state):
+            return True
+    return False
+
+
+def _pump_recompute_events(gui: Any | None = None) -> None:
+    """Process queued GUI follow-ups on the document thread. Do not sleep."""
+
+    host = gui if gui is not None else _gui()
+    if host is not None:
+        update = getattr(host, "updateGui", None)
+        if callable(update):
+            try:
+                update()
+            except Exception:
+                pass
+    for module_name in ("PySide.QtWidgets", "PySide6.QtWidgets", "PySide2.QtWidgets"):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        application = getattr(module, "QApplication", None)
+        processor = getattr(application, "processEvents", None)
+        if callable(processor):
+            try:
+                processor()
+            except Exception:
+                pass
+        break
+
+
+def _drain_recompute(
+    document: Any,
+    *,
+    timeout_s: float | None = None,
+    gui: Any | None = None,
+    clock: Callable[[], float] | None = None,
+    pump: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Call recompute and wait until rebuild finished or the drain times out.
+
+    Document::recompute can return 0 on the GUI thread and queue
+    scheduleGuiRecomputeFollowUp while cooperative / pending / presentation
+    gates are active. Stay on the document thread and pump Qt so that
+    follow-up runs before /v1/run returns success.
+    """
+
+    now = clock or time.monotonic
+    started = now()
+    deadline = started + float(
+        RECOMPUTE_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
+    )
+    calls = 0
+    recompute_call = getattr(document, "recompute", None)
+    if callable(recompute_call):
+        recompute_call()
+        calls += 1
+
+    advance = pump if pump is not None else lambda: _pump_recompute_events(gui)
+    while True:
+        advance()
+        blocked = _recompute_gates_block(document)
+        touched = _document_has_touched_objects(document)
+        if not blocked and not touched:
+            return {
+                "ok": True,
+                "recompute_calls": calls,
+                "ms": (now() - started) * 1000.0,
+                "error": None,
+            }
+        if now() >= deadline:
+            return {
+                "ok": False,
+                "recompute_calls": calls,
+                "ms": (now() - started) * 1000.0,
+                "error": "RECOMPUTE_DRAIN_TIMEOUT",
+            }
+        if not blocked and touched and callable(recompute_call):
+            recompute_call()
+            calls += 1
+
+
 def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -3006,15 +3116,26 @@ def run_script(
         namespace["FreeCADGui"] = gui
     stdout = StringIO()
     stderr = StringIO()
+    drain = None
     try:
         compiled = compile(source, namespace["__file__"], "exec")
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exec(compiled, namespace, namespace)
         if recompute:
             document = getattr(App, "ActiveDocument", None)
-            recompute_call = getattr(document, "recompute", None)
-            if callable(recompute_call):
-                recompute_call()
+            if document is not None:
+                drain = _drain_recompute(document, gui=gui)
+                if not drain.get("ok"):
+                    return failure(
+                        "RECOMPUTE_DRAIN_TIMEOUT",
+                        "Active document recompute did not finish before the drain timeout.",
+                        stage="recompute",
+                        stdout=stdout.getvalue(),
+                        stderr=stderr.getvalue(),
+                        opened=opened,
+                        recompute_calls=drain.get("recompute_calls"),
+                        recompute_drain_ms=drain.get("ms"),
+                    )
     except Exception as exc:
         return failure(
             "SCRIPT_FAILED",
@@ -3025,7 +3146,7 @@ def run_script(
             opened=opened,
         )
     result = namespace.get("result", namespace.get("__result__"))
-    return {
+    payload: dict[str, Any] = {
         "ok": True,
         "stdout": stdout.getvalue(),
         "stderr": stderr.getvalue(),
@@ -3037,6 +3158,10 @@ def run_script(
             else None
         ),
     }
+    if drain is not None:
+        payload["recompute_calls"] = drain.get("recompute_calls")
+        payload["recompute_drain_ms"] = drain.get("ms")
+    return payload
 
 
 def aero_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
