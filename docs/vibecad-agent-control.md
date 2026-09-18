@@ -321,7 +321,7 @@ owner's network controls.
 | POST | `/v1/close` | optional `document`, explicit `discard_unsaved` | Close without silently discarding a modified document |
 | GET | `/v1/ui/menus` | | Live top-level menu names, indices, visibility, and screen geometry |
 | GET | `/v1/ui/ribbon` | | Live ribbon names, workbenches, indices, selection, and screen geometry |
-| POST | `/v1/ui/click` | `{"kind":"menu|ribbon|action","text":"..."}`, optional exact PID/index | Activate one semantic Qt target without moving or clicking the OS cursor |
+| POST | `/v1/ui/click` | `{"kind":"menu|ribbon|action|dialog","text":"..."}`, optional exact PID/index | Activate one semantic Qt target without moving or clicking the OS cursor |
 | POST | `/v1/run` | `{"python":"..."}` or `{"script":"..."}` plus optional `path`, `recompute` | Exec against the active doc |
 | GET | `/v1/operations/{operation_id}` | | Read the in-memory state/result of a client-identified operation without entering the document thread |
 | GET/POST | `/v1/aero` | operation payload for POST | Bounded Aero context and operations |
@@ -390,9 +390,76 @@ tracking explicitly by supplying an `operation_id` through the HTTP API.
 
 `/v1/ui/click` targets an exact live Qt menu action,
 `VibeCADRibbonTabs` entry, or named command `QAction` by visible text
-or object name. Ribbon and menu kinds stay unchanged. The additive
-`action` kind calls `QAction.trigger()` in-process and still does not
-move or click the OS cursor. Optional `expected_process_id` and
+or object name. Action search uses the same `findChildren(QAction)`
+set the main window already exposes, not only toolbar or menu-bar
+`actions()`. Ribbon and menu kinds stay unchanged. The additive
+`action` kind queues `QAction.trigger()` onto the next Qt event-loop
+turn so a modal `QDialog.exec()` cannot hold the HTTP request.
+`findChildren(QAction)` can see a hidden or disabled command copy
+before the enabled Model-tab action. The click path now prefers the
+enabled visible match, or the single enabled command action when the
+standard toolbar copy is hidden. When every matching `QAction` is
+disabled, `QAction.trigger()` does not fire; the click then follows
+`Gui.isCommandActive` (`Command.canInvoke()`) and queues
+`Gui.Command.get(name).run()`. `UI_TARGET_DISABLED` is returned only
+when that command is also not invokable, and the payload then includes
+`action_pick`, `action_match_count`, and `command_active`. The
+additive `dialog` kind presses OK on the visible Choose Orientation
+dialog (XY-plane already selected) in-process. That opens the sketch
+editor: domain tabs including Model are disabled, and
+`PartDesign_Pad` is not a `findChildren(QAction)` match because the
+command is never `addTo()`'d on the Model or sketch.edit ribbon. The
+Finish-group command the window does expose is `Sketcher_LeaveSketch`.
+`CmdSketcherLeaveSketch::activated()` passes
+`getActiveGuiDocument()` (`Application::activeDocument()`) into
+`SketcherGui.leaveActiveSketch`. `requireExactEditState` then throws
+`The exact Sketch document is no longer active in edit mode` when
+`activeDocument()` is not `editDocument()`. A queued LeaveSketch
+click plus a new `Std_New` per workflow creates that split (active
+`Unnamed2`, editor still on an earlier document). The harness
+therefore keeps one document through new, sketch, Extrude, and
+export, and finishes the editor with
+`SketcherGui.leaveActiveSketch` on `Gui.editDocument()`, not the
+active tab. After leave, the rebuilt Model ribbon surfaces
+`PartDesign_DesignExtrude`. An empty sketch makes
+`ProfileBased` throw `Linked shape object is empty` and
+`startConfiguredDesignProfileOperation` then raises
+`The Design operation task panel did not open` and aborts the
+transaction. The smallest closed-profile control on the
+sketch.edit Geometry group is `Sketcher_CreateRectangle` (child of
+`Sketcher_CompCreateRectangles`). Its `activated()` only starts
+`DrawSketchHandlerRectangle`; it does not add geometry. Placing
+the two corners needs viewport clicks, which `/v1/ui/click` kinds
+do not do. The harness therefore does not click that button to
+draw. After `Sketcher_LeaveSketch`, it posts the existing
+`/v1/run` route (already used for tree inspect) with the same
+`SketchObject.addGeometry(Part.Circle(...), False)` call
+`TestConsolidatedPartTools._circle_sketch` and
+`TestSketcherSolver.CreateCircleSketch` already use. Extrude is
+enabled by `designProfileOperationActive()`: a reusable sketch or
+one or more `InternalFace*` regions, not an edge
+(`ReferenceSelection.cpp`, `TestDesignProfileRegionsGui`). The
+harness therefore selects `InternalFace1` on the sketch object
+and calls `Gui.Command.update()` so the `QAction` enabled flag
+matches `isActive()`, then clicks the Extrude button.
+
+Before any workflow, the harness dismisses a leftover
+`Document Recovery` dialog with its real `Cancel` button
+(`DocumentRecovery.ui` / `DocumentRecovery.cpp`). It does not
+press `Start Recovery` (that is the relabeled Ok button). A dirty
+kill leaves that modal under the next Choose Orientation; kind
+`dialog` text `OK` then matches every visible `QDialog` and never
+lands. A pass
+leaves `PartDesign::Body`, a `Sketcher::SketchObject` with
+`GeometryCount >= 1`, and `PartDesign::DesignExtrude` in the
+tree. Export does not click `Std_Export`: that command's
+`activated()` opens `FileDialog::getSaveFileName`, which would
+hold the HTTP request. The harness writes the solid with
+`Import.export` from `src/Mod/Import/App/AppImportPy.cpp`, the
+same exporter the file dialog would call.
+A successful trigger
+counts as applied even when creating a document moves Qt focus;
+restoration fields stay on the payload for evidence. Optional `expected_process_id` and
 `expected_index` values make stale geometry fail closed. Ribbon clicks use an
 in-process Qt mouse event; top-level menus use a non-blocking in-process Qt
 popup. A menu popup is displayed for one bounded preview, then closed before

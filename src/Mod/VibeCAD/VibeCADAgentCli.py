@@ -114,12 +114,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui_click_parser = sub.add_parser(
         "ui-click",
-        help="Activate one semantic ribbon, menu, or action target without moving the OS cursor.",
+        help="Activate one semantic ribbon, menu, action, or dialog target without moving the OS cursor.",
     )
     ui_click_parser.add_argument(
         "--kind",
         required=True,
-        choices=("ribbon", "menu", "action"),
+        choices=("ribbon", "menu", "action", "dialog"),
         help="Target family to activate.",
     )
     ui_click_parser.add_argument("--text", required=True, help="Exact visible target text.")

@@ -27,6 +27,35 @@ def test_workflow_harness_reuses_the_tour_click_route() -> None:
     assert "new_document" in workflows
     assert "sketch_then_pad" in workflows
     assert "\"export\"" in workflows
+    assert '"kind": "menu"' not in workflows
+    assert "PartDesign_NewBody" in workflows
+    assert "Sketcher_NewSketch" in workflows
+    assert "leave_active_sketch" in workflows
+    assert "leaveActiveSketch" in channel
+    assert "PartDesign_DesignExtrude" in workflows
+    assert "place_closed_circle" in workflows
+    assert "export_step" in workflows
+    assert workflows.count("Std_New") == 1
+    assert "InternalFace1" in channel
+    assert "Document Recovery" in channel
+    assert "Start Recovery" in channel
+    assert "Cancel" in channel
+    assert "PartDesign_Pad" not in workflows
+    assert "Part.Circle" in channel
+    assert "Import.export" in channel
+    assert "addGeometry" in channel
+    assert "/v1/run" in channel
+    agent_control = (
+        REPOSITORY_ROOT / "src" / "Mod" / "VibeCAD" / "VibeCADAgentControl.py"
+    ).read_text(encoding="utf-8")
+    assert "_pick_clickable_qt_action" in agent_control
+    assert "_command_is_active" in agent_control
+    assert "_named_command_runner" in agent_control
+    assert "command_active" in agent_control
+    assert '"kind": "dialog"' in workflows
+    assert '"text": "OK"' in workflows
+    assert "Std_New" in workflows
+    assert "Std_Export" not in workflows
     assert "pyautogui" not in channel
     assert "SetCursorPos" not in channel
     assert "SendInput" not in channel

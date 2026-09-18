@@ -39,6 +39,7 @@ def _run_fake(
                 timeout_seconds=5,
                 judge_enabled=kwargs.get("judge_enabled", False),
                 judge_transport=kwargs.get("judge_transport"),
+                export_path=str(Path(temp) / "vibecad-workflow-harness.step"),
             )
             return report, state, base_url
         finally:
@@ -53,6 +54,15 @@ def main() -> int:
 
     report, _state, _base_url = _run_fake(workflows)
     workflow_ids = [item["id"] for item in report["workflows"]]
+    new_step = report["workflows"][0]["steps"][0]
+    new_click = new_step.get("click_response") or {}
+    sketch_clicks = [
+        str((step.get("click") or {}).get("text") or "")
+        for item in report["workflows"]
+        if item["id"] == "sketch_then_pad"
+        for step in item["steps"]
+    ]
+    workflow_source = (TOOLS_DIR / "vibecad_workflows.json").read_text(encoding="utf-8")
     scenarios.append(
         scenario(
             "three_workflows_pass_without_typesafe_key",
@@ -67,6 +77,37 @@ def main() -> int:
             {
                 "passed": report["passed"],
                 "workflow_ids": workflow_ids,
+            },
+        )
+    )
+    scenarios.append(
+        scenario(
+            "workflows_use_visible_ribbon_and_part_design_commands",
+            '"kind": "menu"' not in workflow_source
+            and "PartDesign_NewBody" in sketch_clicks
+            and "Sketcher_NewSketch" in sketch_clicks
+            and "OK" in sketch_clicks
+            and "leave_active_sketch" in workflow_source
+            and "PartDesign_DesignExtrude" in sketch_clicks
+            and "PartDesign_Pad" not in sketch_clicks,
+            {"sketch_clicks": sketch_clicks},
+        )
+    )
+    scenarios.append(
+        scenario(
+            "new_document_lands_when_focus_moves",
+            new_step.get("passed") is True
+            and new_click.get("ok") is False
+            and new_click.get("failure_code") == "UI_CLICK_NOT_APPLIED"
+            and new_click.get("focus_restored") is False
+            and any(
+                isinstance(item, dict) and item.get("active")
+                for item in (new_step.get("documents") or {}).get("documents") or []
+            ),
+            {
+                "errors": new_step.get("errors"),
+                "failure_code": new_click.get("failure_code"),
+                "focus_restored": new_click.get("focus_restored"),
             },
         )
     )
@@ -183,6 +224,187 @@ def main() -> int:
             and first_judge.get("called") is True
             and first_judge.get("counts_as_pass") is True,
             {"judge": first_judge},
+        )
+    )
+
+    sketch_workflow = next(
+        item for item in report["workflows"] if item["id"] == "sketch_then_pad"
+    )
+    export_workflow = next(
+        item for item in report["workflows"] if item["id"] == "export"
+    )
+    sketch_step_ids = [str(step.get("id") or "") for step in sketch_workflow["steps"]]
+    extrude_step = next(
+        step for step in sketch_workflow["steps"] if step.get("id") == "click_extrude"
+    )
+    place_step = next(
+        step
+        for step in sketch_workflow["steps"]
+        if step.get("id") == "place_closed_profile"
+    )
+    export_step = next(
+        step for step in export_workflow["steps"] if step.get("id") == "export_step"
+    )
+    extrude_type_ids = {
+        str(item.get("type_id") or "")
+        for item in (extrude_step.get("tree") or {}).get("objects") or []
+        if isinstance(item, dict)
+    }
+    export_result = (export_step.get("click_response") or {}).get("result") or {}
+    exported_path = str(export_result.get("exported_path") or "")
+    export_bytes = int(export_result.get("bytes") or 0)
+    pad_while_editing = None
+    model_while_editing = None
+    rectangle_while_editing = None
+    with tempfile.TemporaryDirectory(prefix="vibecad-workflow-harness-") as temp:
+        token = secrets.token_hex(24)
+        server, base_url, _state = channel.start_fake_channel(temp, token)
+        try:
+            client = channel.AgentClickChannel(base_url, token, timeout_seconds=5)
+            client.click("action", "Std_New")
+            client.click("ribbon", "Model")
+            client.click("action", "PartDesign_NewBody")
+            client.click("action", "Sketcher_NewSketch")
+            client.click("dialog", "OK")
+            pad_while_editing = client.click("action", "PartDesign_Pad")
+            model_while_editing = client.click("ribbon", "Model")
+            rectangle_while_editing = client.click("action", "Sketcher_CreateRectangle")
+            after_rectangle = client.inspect_tree()
+            leave = client.click("action", "Sketcher_LeaveSketch")
+            empty_extrude = client.click("action", "PartDesign_DesignExtrude")
+            empty_tree = client.inspect_tree()
+            placed = client.run(channel.workflow_run_python("place_closed_circle"))
+            disabled_after_place = client.click("action", "PartDesign_DesignExtrude")
+            selected = client.run(channel.workflow_run_python("select_sketch"))
+            filled_extrude = client.click("action", "PartDesign_DesignExtrude")
+            filled_tree = client.inspect_tree()
+        finally:
+            server.shutdown()
+            server.server_close()
+    after_rectangle_objects = (
+        (after_rectangle.get("result") or {}).get("objects") or []
+    )
+    empty_type_ids = {
+        str(item.get("type_id") or "")
+        for item in ((empty_tree.get("result") or {}).get("objects") or [])
+        if isinstance(item, dict)
+    }
+    filled_type_ids = {
+        str(item.get("type_id") or "")
+        for item in ((filled_tree.get("result") or {}).get("objects") or [])
+        if isinstance(item, dict)
+    }
+    rectangle_added_profile = any(
+        isinstance(item, dict) and item.get("closed_profile")
+        for item in after_rectangle_objects
+    )
+    scenarios.append(
+        scenario(
+            "closed_profile_then_extrude_creates_solid_and_export_writes_file",
+            sketch_step_ids
+            == [
+                "select_model_ribbon",
+                "click_body",
+                "click_sketch",
+                "accept_sketch_orientation",
+                "leave_sketch",
+                "place_closed_profile",
+                "select_sketch",
+                "click_extrude",
+            ]
+            and place_step.get("passed") is True
+            and extrude_step.get("passed") is True
+            and "PartDesign::DesignExtrude" in extrude_type_ids
+            and export_step.get("passed") is True
+            and exported_path.endswith(".step")
+            and export_bytes >= 1
+            and "place_closed_circle" in channel_source
+            and "leave_active_sketch" in channel_source
+            and "leaveActiveSketch" in channel_source
+            and "Part.Circle" in channel_source
+            and "addGeometry" in channel_source
+            and "Import.export" in channel_source,
+            {
+                "sketch_step_ids": sketch_step_ids,
+                "extrude_type_ids": sorted(extrude_type_ids),
+                "exported_path": exported_path,
+                "export_bytes": export_bytes,
+            },
+        )
+    )
+    scenarios.append(
+        scenario(
+            "empty_sketch_and_rectangle_handler_do_not_create_a_solid",
+            pad_while_editing.get("failure_code") == "UI_TARGET_NOT_UNIQUE"
+            and "found 0" in str(pad_while_editing.get("error") or "")
+            and model_while_editing.get("failure_code") == "UI_TARGET_DISABLED"
+            and rectangle_while_editing.get("ok") is True
+            and rectangle_while_editing.get("object_name") == "Sketcher_CreateRectangle"
+            and rectangle_added_profile is False
+            and leave.get("ok") is True
+            and leave.get("object_name") == "Sketcher_LeaveSketch"
+            and empty_extrude.get("ok") is True
+            and empty_extrude.get("error") == "Linked shape object is empty"
+            and "PartDesign::DesignExtrude" not in empty_type_ids
+            and "Sketcher::SketchObject" in empty_type_ids
+            and placed.get("ok") is True
+            and int((placed.get("result") or {}).get("geometry_count") or 0) >= 1
+            and disabled_after_place.get("failure_code") == "UI_TARGET_DISABLED"
+            and selected.get("ok") is True
+            and (selected.get("result") or {}).get("sub") == "InternalFace1"
+            and (selected.get("result") or {}).get("command_active") is True
+            and filled_extrude.get("ok") is True
+            and not filled_extrude.get("error")
+            and "PartDesign::DesignExtrude" in filled_type_ids,
+            {
+                "pad_while_editing": pad_while_editing.get("failure_code"),
+                "model_while_editing": model_while_editing.get("failure_code"),
+                "rectangle_added_profile": rectangle_added_profile,
+                "empty_extrude_error": empty_extrude.get("error"),
+                "disabled_after_place": disabled_after_place.get("failure_code"),
+                "selected_sub": (selected.get("result") or {}).get("sub"),
+                "empty_type_ids": sorted(empty_type_ids),
+                "filled_type_ids": sorted(filled_type_ids),
+            },
+        )
+    )
+
+    recovery_ok = None
+    dismissed = None
+    with tempfile.TemporaryDirectory(prefix="vibecad-workflow-harness-") as temp:
+        token = secrets.token_hex(24)
+        server, base_url, _state = channel.start_fake_channel(
+            temp, token, recovery_dialog=True
+        )
+        try:
+            client = channel.AgentClickChannel(base_url, token, timeout_seconds=5)
+            client.click("action", "Std_New")
+            client.click("ribbon", "Model")
+            client.click("action", "PartDesign_NewBody")
+            client.click("action", "Sketcher_NewSketch")
+            recovery_ok = client.click("dialog", "OK")
+            dismissed = client.run(
+                channel.workflow_run_python("dismiss_document_recovery")
+            )
+            after_cancel = client.click("dialog", "OK")
+        finally:
+            server.shutdown()
+            server.server_close()
+    scenarios.append(
+        scenario(
+            "document_recovery_is_dismissed_with_cancel_not_start_recovery",
+            recovery_ok.get("failure_code") == "UI_TARGET_NOT_UNIQUE"
+            and "found 2" in str(recovery_ok.get("error") or "")
+            and dismissed.get("ok") is True
+            and (dismissed.get("result") or {}).get("button") == "Cancel"
+            and (dismissed.get("result") or {}).get("dismissed") == ["Cancel"]
+            and after_cancel.get("ok") is True
+            and after_cancel.get("object_name") == "Choose Orientation",
+            {
+                "recovery_ok": recovery_ok.get("failure_code"),
+                "dismissed": dismissed.get("result"),
+                "after_cancel": after_cancel.get("object_name"),
+            },
         )
     )
 

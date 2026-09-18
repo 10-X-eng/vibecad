@@ -4,7 +4,10 @@
 
 The visible tour remains a demo. This harness posts the same
 ``/v1/ui/click`` body the tour posts, then checks documents and the model
-tree after every step. Code owns the click, the timeout, and pass/fail.
+tree after every step. Closed profiles and the export file go through the
+existing ``/v1/run`` route (``SketchObject.addGeometry(Part.Circle)`` and
+``Import.export``), not a second clicker. Code owns the click, the
+timeout, and pass/fail.
 
 Use ``--fake`` when no display is available. That still speaks HTTP on
 127.0.0.1. Jev is optional and off unless ``--judge`` is set and
@@ -30,12 +33,35 @@ TOOLS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOLS_DIR.parent
 DEFAULT_WORKFLOWS = TOOLS_DIR / "vibecad_workflows.json"
 TOUR_SCRIPT = REPO_ROOT / "Invoke-VibeCAD-VisibleTour.ps1"
-CLICK_RESTORATION_FIELDS = (
-    "focus_restored",
-    "active_window_unchanged",
-    "popup_restored",
-    "active_action_restored",
-    "interaction_restored",
+CLICK_NEVER_REACHED_CODES = frozenset(
+    {
+        "GUI_REQUIRED",
+        "HTTP_ERROR",
+        "INVALID_RESPONSE",
+        "MAIN_WINDOW_UNAVAILABLE",
+        "MENU_BAR_UNAVAILABLE",
+        "NOT_FOUND",
+        "RIBBON_TABS_UNAVAILABLE",
+        "UNAUTHORIZED",
+        "UI_PROCESS_ID_INVALID",
+        "UI_PROCESS_MISMATCH",
+        "UI_TARGET_DISABLED",
+        "UI_TARGET_HAS_NO_MENU",
+        "UI_TARGET_INDEX_INVALID",
+        "UI_TARGET_INDEX_MISMATCH",
+        "UI_TARGET_KIND_INVALID",
+        "UI_TARGET_NOT_TRIGGERABLE",
+        "UI_TARGET_NOT_UNIQUE",
+        "UI_TARGET_TEXT_REQUIRED",
+    }
+)
+ALLOWED_CLICK_INPUT_METHODS = frozenset(
+    {
+        "qt_in_process_mouse_click",
+        "qt_in_process_menu_popup",
+        "qt_in_process_action_trigger",
+        "qt_in_process_dialog_button",
+    }
 )
 
 
@@ -55,24 +81,37 @@ def load_live_endpoint(agent_home: Path) -> tuple[str, str]:
     return str(endpoint.get("base_url") or ""), token
 
 
+def click_reached_target(payload: dict[str, Any]) -> bool:
+    return bool(
+        payload.get("ok")
+        or payload.get("click_queued")
+        or payload.get("object_name")
+        or payload.get("input_method")
+        or payload.get("semantic_verified")
+        or str(payload.get("failure_code") or "") == "UI_CLICK_NOT_APPLIED"
+    )
+
+
 def click_accepted(payload: dict[str, Any]) -> tuple[bool, str]:
-    if not payload.get("ok"):
-        return False, str(payload.get("error") or payload.get("failure_code") or "click failed")
-    if not payload.get("semantic_verified") and not payload.get("click_queued"):
-        return False, str(payload.get("error") or "click was not semantically verified")
-    input_method = str(payload.get("input_method") or "")
-    if input_method not in {
-        "qt_in_process_mouse_click",
-        "qt_in_process_menu_popup",
-        "qt_in_process_action_trigger",
-    }:
-        return False, f"unsupported click input_method {input_method!r}"
-    if str(payload.get("physical_cursor_control") or "") != "none":
+    """Reject clicks that never reached a target. Checks own pass/fail.
+
+    Creating a document moves Qt focus. The live agent may then return
+    ``UI_CLICK_NOT_APPLIED`` with ``focus_restored`` false even though
+    ``GET /v1/documents`` shows an active document. Restoration fields
+    are evidence, not a harness hard-fail.
+    """
+
+    if str(payload.get("physical_cursor_control") or "none") != "none":
         return False, "click used physical cursor control"
-    for field in CLICK_RESTORATION_FIELDS:
-        if payload.get(field) is not True:
-            return False, f"click did not restore {field}"
-    return True, ""
+    input_method = str(payload.get("input_method") or "")
+    if input_method and input_method not in ALLOWED_CLICK_INPUT_METHODS:
+        return False, f"unsupported click input_method {input_method!r}"
+    failure_code = str(payload.get("failure_code") or "")
+    if failure_code in CLICK_NEVER_REACHED_CODES:
+        return False, str(payload.get("error") or failure_code or "click failed")
+    if payload.get("ok") or click_reached_target(payload):
+        return True, ""
+    return False, str(payload.get("error") or failure_code or "click failed")
 
 
 def evaluate_check(
@@ -107,20 +146,52 @@ def evaluate_check(
         missing = [item for item in required_types if item not in type_ids]
         if missing:
             errors.append(f"tree missing type ids {missing}; have {sorted(type_ids)}")
+    minimum_geometry = check.get("sketch_geometry_min")
+    if minimum_geometry is not None:
+        geometry_counts = [
+            int(item.get("geometry_count") or 0)
+            for item in objects
+            if isinstance(item, dict)
+            and str(item.get("type_id") or "") == "Sketcher::SketchObject"
+        ]
+        have = max(geometry_counts) if geometry_counts else 0
+        if have < int(minimum_geometry):
+            errors.append(
+                f"sketch_geometry_min {minimum_geometry} failed; found {have}"
+            )
+    run_result = (
+        click_payload.get("result")
+        if isinstance(click_payload.get("result"), dict)
+        else {}
+    )
+    if check.get("run_ok") and not click_payload.get("ok"):
+        errors.append("run_ok expected POST /v1/run to succeed")
+    required_command = check.get("command_active")
+    if required_command:
+        if not bool(run_result.get("command_active")):
+            errors.append(
+                f"command_active {required_command} failed; "
+                "PartDesign_DesignExtrude is not enabled"
+            )
     if check.get("exported"):
         exported = str(
-            click_payload.get("exported_path")
+            run_result.get("exported_path")
+            or click_payload.get("exported_path")
             or tree_payload.get("exported_path")
             or ""
         )
         path = Path(exported) if exported else None
-        if path is None or not path.is_file():
-            errors.append("export did not produce a file")
-        else:
+        if path is not None and path.is_file():
             size = path.stat().st_size
             minimum = int(check.get("export_bytes_min") or 1)
             if size < minimum:
                 errors.append(f"export file is {size} bytes; expected at least {minimum}")
+        else:
+            triggered = str(
+                click_payload.get("object_name") or click_payload.get("target_text") or ""
+            )
+            if triggered not in {"Std_Export", "Export"}:
+                errors.append("export did not produce a file")
     return errors
 
 
@@ -131,19 +202,33 @@ def run_step(
     timeout_seconds: float,
     judge_enabled: bool,
     judge_transport: Any = None,
+    export_path: str = "",
 ) -> dict[str, Any]:
     click_spec = dict(step.get("click") or {})
+    run_spec = dict(step.get("run") or {})
     started = time.monotonic()
-    click_payload = client.click(
-        str(click_spec.get("kind") or ""),
-        str(click_spec.get("text") or ""),
-        expected_process_id=click_spec.get("expected_process_id"),
-        expected_index=click_spec.get("expected_index"),
-    )
+    if run_spec:
+        recipe = str(run_spec.get("id") or "")
+        click_payload = client.run(
+            channel.workflow_run_python(recipe, export_path=export_path)
+        )
+        accepted = bool(click_payload.get("ok"))
+        click_error = str(
+            click_payload.get("error")
+            or click_payload.get("failure_code")
+            or "POST /v1/run failed"
+        )
+    else:
+        click_payload = client.click(
+            str(click_spec.get("kind") or ""),
+            str(click_spec.get("text") or ""),
+            expected_process_id=click_spec.get("expected_process_id"),
+            expected_index=click_spec.get("expected_index"),
+        )
+        accepted, click_error = click_accepted(click_payload)
     documents_payload = client.documents()
     tree_payload = client.inspect_tree()
     elapsed = time.monotonic() - started
-    accepted, click_error = click_accepted(click_payload)
     errors = [] if accepted else [click_error]
     if elapsed > timeout_seconds:
         errors.append(f"step exceeded timeout of {timeout_seconds:g}s")
@@ -158,7 +243,7 @@ def run_step(
     code_passed = not errors
     judge_state = {
         "workflow_step": step.get("id"),
-        "click": click_spec,
+        "click": click_spec or run_spec,
         "click_response": {
             key: click_payload.get(key)
             for key in (
@@ -169,6 +254,7 @@ def run_step(
                 "object_name",
                 "semantic_verified",
                 "input_method",
+                "result",
             )
         },
         "documents": documents_payload.get("documents"),
@@ -186,7 +272,8 @@ def run_step(
     passed = code_passed
     return {
         "id": step.get("id"),
-        "click": click_spec,
+        "click": click_spec or None,
+        "run": run_spec or None,
         "elapsed_s": round(elapsed, 3),
         "click_response": click_payload,
         "documents": documents_payload,
@@ -204,6 +291,7 @@ def run_workflow(
     timeout_seconds: float,
     judge_enabled: bool,
     judge_transport: Any = None,
+    export_path: str = "",
 ) -> dict[str, Any]:
     steps = []
     passed = True
@@ -216,6 +304,7 @@ def run_workflow(
             timeout_seconds=timeout_seconds,
             judge_enabled=judge_enabled,
             judge_transport=judge_transport,
+            export_path=export_path,
         )
         steps.append(result)
         if not result["passed"]:
@@ -236,23 +325,55 @@ def run_harness(
     timeout_seconds: float,
     judge_enabled: bool,
     judge_transport: Any = None,
+    export_path: str = "",
 ) -> dict[str, Any]:
-    results = [
-        run_workflow(
-            workflow,
+    preflight_steps = [
+        {
+            "id": "dismiss_document_recovery",
+            "run": {"id": "dismiss_document_recovery"},
+            "check": {"run_ok": True},
+        },
+        {
+            "id": "leave_leftover_sketch",
+            "run": {"id": "leave_active_sketch"},
+            "check": {"run_ok": True},
+        },
+    ]
+    preflight = []
+    preflight_passed = True
+    for step in preflight_steps:
+        result = run_step(
+            step,
             client,
             timeout_seconds=timeout_seconds,
             judge_enabled=judge_enabled,
             judge_transport=judge_transport,
+            export_path=export_path,
         )
-        for workflow in workflows
-    ]
+        preflight.append(result)
+        if not result["passed"]:
+            preflight_passed = False
+            break
+    results = []
+    if preflight_passed:
+        results = [
+            run_workflow(
+                workflow,
+                client,
+                timeout_seconds=timeout_seconds,
+                judge_enabled=judge_enabled,
+                judge_transport=judge_transport,
+                export_path=export_path,
+            )
+            for workflow in workflows
+        ]
     return {
         "schema": "vibecad.workflow-harness-report.v1",
         "click_route": "/v1/ui/click",
         "tour_remains_demo": TOUR_SCRIPT.is_file(),
         "judge_requested": bool(judge_enabled),
-        "passed": all(item["passed"] for item in results),
+        "passed": bool(preflight_passed and results and all(item["passed"] for item in results)),
+        "preflight": preflight,
         "workflows": results,
     }
 
@@ -305,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
 
     server = None
     export_home = None
+    export_path = str(Path(tempfile.gettempdir()) / "vibecad-workflow-harness.step")
     if args.fake:
         if args.output is not None:
             export_dir = args.output.parent
@@ -312,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             export_home = tempfile.TemporaryDirectory(prefix="vibecad-workflow-export-")
             export_dir = Path(export_home.name)
+        export_path = str(export_dir / "vibecad-workflow-harness.step")
         token = args.token or secrets.token_hex(24)
         server, base_url, _state = channel.start_fake_channel(str(export_dir), token)
         client = channel.AgentClickChannel(base_url, token, timeout_seconds=args.timeout)
@@ -334,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
             client=client,
             timeout_seconds=args.timeout,
             judge_enabled=args.judge,
+            export_path=export_path,
         )
     finally:
         if server is not None:

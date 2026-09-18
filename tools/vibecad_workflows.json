@@ -6,16 +6,6 @@
       "title": "New document",
       "steps": [
         {
-          "id": "open_file_menu",
-          "click": {
-            "kind": "menu",
-            "text": "File"
-          },
-          "check": {
-            "click_ok": true
-          }
-        },
-        {
           "id": "click_new",
           "click": {
             "kind": "action",
@@ -33,16 +23,6 @@
       "title": "Sketch then pad",
       "steps": [
         {
-          "id": "seed_new_document",
-          "click": {
-            "kind": "action",
-            "text": "Std_New"
-          },
-          "check": {
-            "document_count_min": 1
-          }
-        },
-        {
           "id": "select_model_ribbon",
           "click": {
             "kind": "ribbon",
@@ -53,27 +33,83 @@
           }
         },
         {
+          "id": "click_body",
+          "click": {
+            "kind": "action",
+            "text": "PartDesign_NewBody"
+          },
+          "check": {
+            "tree_type_ids": [
+              "PartDesign::Body"
+            ]
+          }
+        },
+        {
           "id": "click_sketch",
           "click": {
             "kind": "action",
             "text": "Sketcher_NewSketch"
           },
           "check": {
+            "click_ok": true
+          }
+        },
+        {
+          "id": "accept_sketch_orientation",
+          "click": {
+            "kind": "dialog",
+            "text": "OK"
+          },
+          "check": {
             "tree_type_ids": [
+              "PartDesign::Body",
               "Sketcher::SketchObject"
             ]
           }
         },
         {
-          "id": "click_pad",
+          "id": "leave_sketch",
+          "run": {
+            "id": "leave_active_sketch"
+          },
+          "check": {
+            "run_ok": true,
+            "tree_type_ids": [
+              "PartDesign::Body",
+              "Sketcher::SketchObject"
+            ]
+          }
+        },
+        {
+          "id": "place_closed_profile",
+          "run": {
+            "id": "place_closed_circle"
+          },
+          "check": {
+            "sketch_geometry_min": 1
+          }
+        },
+        {
+          "id": "select_sketch",
+          "run": {
+            "id": "select_sketch"
+          },
+          "check": {
+            "run_ok": true,
+            "command_active": "PartDesign_DesignExtrude"
+          }
+        },
+        {
+          "id": "click_extrude",
           "click": {
             "kind": "action",
-            "text": "PartDesign_Pad"
+            "text": "PartDesign_DesignExtrude"
           },
           "check": {
             "tree_type_ids": [
+              "PartDesign::Body",
               "Sketcher::SketchObject",
-              "PartDesign::Pad"
+              "PartDesign::DesignExtrude"
             ]
           }
         }
@@ -84,54 +120,9 @@
       "title": "Export",
       "steps": [
         {
-          "id": "seed_new_document",
-          "click": {
-            "kind": "action",
-            "text": "Std_New"
-          },
-          "check": {
-            "document_count_min": 1
-          }
-        },
-        {
-          "id": "seed_sketch",
-          "click": {
-            "kind": "action",
-            "text": "Sketcher_NewSketch"
-          },
-          "check": {
-            "tree_type_ids": [
-              "Sketcher::SketchObject"
-            ]
-          }
-        },
-        {
-          "id": "seed_pad",
-          "click": {
-            "kind": "action",
-            "text": "PartDesign_Pad"
-          },
-          "check": {
-            "tree_type_ids": [
-              "PartDesign::Pad"
-            ]
-          }
-        },
-        {
-          "id": "open_file_menu",
-          "click": {
-            "kind": "menu",
-            "text": "File"
-          },
-          "check": {
-            "click_ok": true
-          }
-        },
-        {
-          "id": "click_export",
-          "click": {
-            "kind": "action",
-            "text": "Std_Export"
+          "id": "export_step",
+          "run": {
+            "id": "export_step"
           },
           "check": {
             "exported": true,
