@@ -31,6 +31,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import uuid
 from typing import Any, Callable
@@ -39,6 +40,22 @@ from urllib.parse import unquote, urlparse
 
 AGENT_HOST = "127.0.0.1"
 DEFAULT_AGENT_PORT = 8766
+RECOMPUTE_DRAIN_TIMEOUT_S = 30.0
+_RECOMPUTE_DRAIN_GATE_ATTRS = (
+    "CooperativeMutationActive",
+    "RecomputePending",
+    "PresentationUpdateActive",
+    "MutationBlockingPresentationUpdateActive",
+    "GuiRecomputeCoordinatorActive",
+)
+_RECOMPUTE_PATTERN_TYPE_MARKERS = (
+    "PartDesign::PolarPattern",
+    "PartDesign::LinearPattern",
+    "PartDesign::Mirrored",
+    "PartDesign::MultiTransform",
+    "PartDesign::Transformed",
+)
+_RECOMPUTE_BODY_TYPE_MARKERS = ("PartDesign::Body",)
 AGENT_PORT_ENV = "VIBECAD_AGENT_PORT"
 AGENT_HOME_ENV = "VIBECAD_AGENT_HOME"
 TOKEN_FILENAME = "token"
@@ -2948,6 +2965,367 @@ def capture_screenshot(
     }
 
 
+def _recompute_gates_block(document: Any) -> bool:
+    """True while Document::recompute would early-return and queue a follow-up.
+
+    Python already exposes CooperativeMutationActive, RecomputePending, and
+    PresentationUpdateActive. PresentationUpdateActive is a conservative
+    proxy for C++ mutation-blocking presentation. Coordinator activity is
+    covered by CooperativeMutationActive (beginCooperativeMutation) and by
+    GuiRecomputeCoordinatorActive if that getter is ever bound.
+    """
+
+    return any(
+        bool(getattr(document, name, False)) for name in _RECOMPUTE_DRAIN_GATE_ATTRS
+    )
+
+
+def _document_has_touched_objects(document: Any) -> bool:
+    for obj in getattr(document, "Objects", None) or ():
+        state = getattr(obj, "State", None)
+        if state is None:
+            continue
+        if "Touched" in list(state):
+            return True
+    return False
+
+
+def _object_type_id(obj: Any) -> str:
+    return str(getattr(obj, "TypeId", "") or getattr(obj, "Type", "") or "")
+
+
+def _object_has_type(obj: Any, *markers: str) -> bool:
+    type_id = _object_type_id(obj)
+    if type_id in markers:
+        return True
+    derived = getattr(obj, "isDerivedFrom", None)
+    if not callable(derived):
+        return False
+    for name in markers:
+        try:
+            if derived(name):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _is_patterned_feature(obj: Any) -> bool:
+    return _object_has_type(obj, *_RECOMPUTE_PATTERN_TYPE_MARKERS)
+
+
+def _is_part_design_body(obj: Any) -> bool:
+    if _object_has_type(obj, *_RECOMPUTE_BODY_TYPE_MARKERS):
+        return True
+    tip = getattr(obj, "Tip", None)
+    return tip is not None and tip is not obj
+
+
+def _safe_shape_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
+
+
+def _shape_signature(shape: Any) -> tuple[Any, ...]:
+    """Cheap Tip/Body solid fingerprint. Volume is the live /v1/run metric."""
+
+    if shape is None:
+        return ()
+    volume = _safe_shape_float(getattr(shape, "Volume", None))
+    hash_code = None
+    hasher = getattr(shape, "hashCode", None)
+    if callable(hasher):
+        try:
+            hash_code = int(hasher())
+        except Exception:
+            hash_code = None
+    box = getattr(shape, "BoundBox", None)
+    bounds = None
+    if box is not None:
+        bounds = (
+            _safe_shape_float(getattr(box, "XLength", None)),
+            _safe_shape_float(getattr(box, "YLength", None)),
+            _safe_shape_float(getattr(box, "ZLength", None)),
+        )
+    return (volume, hash_code, bounds)
+
+
+def _pattern_rebuild_incomplete(obj: Any) -> bool:
+    rejected = getattr(obj, "RejectedSolidCount", None)
+    try:
+        if rejected is not None and int(rejected) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    occurrences = getattr(obj, "Occurrences", None)
+    generated = getattr(obj, "GeneratedOccurrenceCount", None)
+    try:
+        if (
+            occurrences is not None
+            and generated is not None
+            and int(occurrences) > 0
+            and int(generated) > 0
+            and int(occurrences) != int(generated)
+        ):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _solid_readiness(document: Any) -> dict[str, Any]:
+    """Tip/Body/pattern readiness beyond document gates and Touched flags.
+
+    PolarPattern / Body can report Up-to-date after open while the stored
+    solid is still a partial fuse, or while Body.Shape still holds the
+    restored partner of Tip.Shape (preserveRestoredShape).
+    """
+
+    items: list[tuple[str, tuple[Any, ...]]] = []
+    force_targets: list[Any] = []
+    incomplete = False
+    tip_mismatch = False
+    needs_dirty = False
+    for obj in getattr(document, "Objects", None) or ():
+        patterned = _is_patterned_feature(obj)
+        body = _is_part_design_body(obj)
+        if not patterned and not body:
+            continue
+        needs_dirty = True
+        force_targets.append(obj)
+        name = str(getattr(obj, "Name", "") or id(obj))
+        items.append((name, _shape_signature(getattr(obj, "Shape", None))))
+        if _pattern_rebuild_incomplete(obj):
+            incomplete = True
+        tip = getattr(obj, "Tip", None)
+        if tip is None or tip is obj:
+            continue
+        force_targets.append(tip)
+        tip_name = str(getattr(tip, "Name", "") or f"{name}.Tip")
+        tip_sig = _shape_signature(getattr(tip, "Shape", None))
+        items.append((tip_name, tip_sig))
+        tip_volume = _safe_shape_float(getattr(getattr(tip, "Shape", None), "Volume", None))
+        body_volume = _safe_shape_float(getattr(getattr(obj, "Shape", None), "Volume", None))
+        if (
+            tip_volume is not None
+            and body_volume is not None
+            and tip_volume != body_volume
+        ):
+            tip_mismatch = True
+    return {
+        "items": tuple(items),
+        "incomplete": incomplete,
+        "tip_mismatch": tip_mismatch,
+        "needs_dirty": needs_dirty,
+        "force_targets": tuple(force_targets),
+    }
+
+
+def _document_touched_objects(document: Any) -> tuple[Any, ...]:
+    touched: list[Any] = []
+    for obj in getattr(document, "Objects", None) or ():
+        state = getattr(obj, "State", None)
+        if state is None:
+            continue
+        if "Touched" in list(state):
+            touched.append(obj)
+    return tuple(touched)
+
+
+def _linked_rebuild_objects(obj: Any) -> tuple[Any, ...]:
+    linked: list[Any] = []
+    for attr in ("Originals", "BaseFeature"):
+        value = getattr(obj, attr, None)
+        if value is None:
+            continue
+        get_values = getattr(value, "getValues", None)
+        if callable(get_values):
+            try:
+                value = get_values()
+            except Exception:
+                continue
+        if isinstance(value, (list, tuple)):
+            linked.extend(item for item in value if item is not None)
+        else:
+            linked.append(value)
+    return tuple(linked)
+
+
+def _collect_dirty_targets(
+    readiness: dict[str, Any],
+    extra: tuple[Any, ...] | list[Any] = (),
+) -> tuple[Any, ...]:
+    targets: list[Any] = []
+    seen: set[int] = set()
+
+    def add(obj: Any) -> None:
+        if obj is None:
+            return
+        marker = id(obj)
+        if marker in seen:
+            return
+        seen.add(marker)
+        targets.append(obj)
+
+    for obj in readiness.get("force_targets") or ():
+        add(obj)
+        for linked in _linked_rebuild_objects(obj):
+            add(linked)
+    for obj in extra:
+        add(obj)
+    return tuple(targets)
+
+
+def _readiness_volume_key(
+    items: tuple[tuple[str, tuple[Any, ...]], ...],
+) -> tuple[tuple[str, Any], ...]:
+    # hashCode can change on every execute; Volume is the live flake metric.
+    return tuple((name, signature[0] if signature else None) for name, signature in items)
+
+
+def _touch_objects(targets: tuple[Any, ...] | list[Any]) -> int:
+    touched = 0
+    for obj in targets:
+        touch = getattr(obj, "touch", None)
+        if not callable(touch):
+            continue
+        try:
+            touch()
+        except Exception:
+            continue
+        touched += 1
+    return touched
+
+
+def _call_recompute(recompute_call: Any) -> None:
+    if callable(recompute_call):
+        recompute_call()
+
+
+def _dirty_and_recompute(recompute_call: Any, targets: tuple[Any, ...]) -> None:
+    """Live propeller: idle recompute is a no-op; touch Tip/Pad then rebuild."""
+
+    _touch_objects(targets)
+    _call_recompute(recompute_call)
+
+
+def _pump_recompute_events(gui: Any | None = None) -> None:
+    """Process queued GUI follow-ups on the document thread. Do not sleep."""
+
+    host = gui if gui is not None else _gui()
+    if host is not None:
+        update = getattr(host, "updateGui", None)
+        if callable(update):
+            try:
+                update()
+            except Exception:
+                pass
+    for module_name in ("PySide.QtWidgets", "PySide6.QtWidgets", "PySide2.QtWidgets"):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        application = getattr(module, "QApplication", None)
+        processor = getattr(application, "processEvents", None)
+        if callable(processor):
+            try:
+                processor()
+            except Exception:
+                pass
+        break
+
+
+def _drain_recompute(
+    document: Any,
+    *,
+    timeout_s: float | None = None,
+    gui: Any | None = None,
+    clock: Callable[[], float] | None = None,
+    pump: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Call recompute and wait until rebuild finished or the drain times out.
+
+    Document::recompute can return 0 on the GUI thread and queue
+    scheduleGuiRecomputeFollowUp while cooperative / pending / presentation
+    gates are active. Stay on the document thread and pump Qt so follow-up
+    runs. After flags go idle, a PartDesign Tip/pattern can still hold an
+    incomplete solid; a second idle recompute is a no-op. Dirty Tip/Pad
+    (``touch()``) and rebuild until Volume is stable across that pass.
+    """
+
+    now = clock or time.monotonic
+    started = now()
+    deadline = started + float(
+        RECOMPUTE_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
+    )
+    calls = 0
+    recompute_call = getattr(document, "recompute", None)
+    participants = _document_touched_objects(document)
+    if callable(recompute_call):
+        recompute_call()
+        calls += 1
+
+    advance = pump if pump is not None else lambda: _pump_recompute_events(gui)
+    pre_dirty_volumes: tuple[tuple[str, Any], ...] | None = None
+
+    def timed_out() -> bool:
+        return now() >= deadline
+
+    def fail() -> dict[str, Any]:
+        return {
+            "ok": False,
+            "recompute_calls": calls,
+            "ms": (now() - started) * 1000.0,
+            "error": "RECOMPUTE_DRAIN_TIMEOUT",
+        }
+
+    def dirty_rebuild(readiness: dict[str, Any]) -> None:
+        nonlocal calls
+        targets = _collect_dirty_targets(readiness, participants)
+        _dirty_and_recompute(recompute_call, targets)
+        calls += 1
+
+    while True:
+        advance()
+        blocked = _recompute_gates_block(document)
+        touched = _document_has_touched_objects(document)
+        if blocked or touched:
+            if timed_out():
+                return fail()
+            if not blocked and touched:
+                _call_recompute(recompute_call)
+                calls += 1
+            continue
+
+        readiness = _solid_readiness(document)
+        if readiness["incomplete"] or readiness["tip_mismatch"]:
+            if timed_out():
+                return fail()
+            dirty_rebuild(readiness)
+            pre_dirty_volumes = None
+            continue
+
+        items = readiness["items"]
+        if items and readiness["needs_dirty"]:
+            volumes = _readiness_volume_key(items)
+            if pre_dirty_volumes is None or volumes != pre_dirty_volumes:
+                if timed_out():
+                    return fail()
+                pre_dirty_volumes = volumes
+                dirty_rebuild(readiness)
+                continue
+
+        return {
+            "ok": True,
+            "recompute_calls": calls,
+            "ms": (now() - started) * 1000.0,
+            "error": None,
+        }
+
+
 def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -3006,15 +3384,26 @@ def run_script(
         namespace["FreeCADGui"] = gui
     stdout = StringIO()
     stderr = StringIO()
+    drain = None
     try:
         compiled = compile(source, namespace["__file__"], "exec")
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exec(compiled, namespace, namespace)
         if recompute:
             document = getattr(App, "ActiveDocument", None)
-            recompute_call = getattr(document, "recompute", None)
-            if callable(recompute_call):
-                recompute_call()
+            if document is not None:
+                drain = _drain_recompute(document, gui=gui)
+                if not drain.get("ok"):
+                    return failure(
+                        "RECOMPUTE_DRAIN_TIMEOUT",
+                        "Active document recompute did not finish before the drain timeout.",
+                        stage="recompute",
+                        stdout=stdout.getvalue(),
+                        stderr=stderr.getvalue(),
+                        opened=opened,
+                        recompute_calls=drain.get("recompute_calls"),
+                        recompute_drain_ms=drain.get("ms"),
+                    )
     except Exception as exc:
         return failure(
             "SCRIPT_FAILED",
@@ -3025,7 +3414,7 @@ def run_script(
             opened=opened,
         )
     result = namespace.get("result", namespace.get("__result__"))
-    return {
+    payload: dict[str, Any] = {
         "ok": True,
         "stdout": stdout.getvalue(),
         "stderr": stderr.getvalue(),
@@ -3037,6 +3426,10 @@ def run_script(
             else None
         ),
     }
+    if drain is not None:
+        payload["recompute_calls"] = drain.get("recompute_calls")
+        payload["recompute_drain_ms"] = drain.get("ms")
+    return payload
 
 
 def aero_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
